@@ -29,3 +29,30 @@ def keypress() -> Iterator[Callable[[], bool]]:
         yield pressed
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+
+
+_KEYS = {
+    b"\x1b[A": "up", b"\x1b[B": "down", b"\x1b[C": "right", b"\x1b[D": "left",
+    b"\x1bOA": "up", b"\x1bOB": "down", b"\x1bOC": "right", b"\x1bOD": "left",  # some terminals' arrow codes
+    b"\n": "enter", b"\r": "enter", b"\x1b": "escape",
+}
+
+
+@contextlib.contextmanager
+def keys() -> Iterator[Callable[[], str]]:
+    """Yield a function that waits for the next key press and names it:
+    "up", "down", "left", "right", "enter", "escape", or the character typed."""
+    fd = sys.stdin.fileno()
+    saved = termios.tcgetattr(fd)
+    tty.setcbreak(fd)
+
+    def next_key() -> str:
+        data = os.read(fd, 1)
+        if data == b"\x1b" and select.select([fd], [], [], 0.05)[0]:  # an arrow key, not Escape alone
+            data += os.read(fd, 2)
+        return _KEYS.get(data, data.decode(errors="ignore"))
+
+    try:
+        yield next_key
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, saved)

@@ -1,10 +1,11 @@
+import contextlib
 import stat
 
 import pytest
 import sounddevice as sd
 from typer.testing import CliRunner
 
-from woodshed import cli, config, genius
+from woodshed import cli, config, genius, widgets
 
 DEVICES = [
     {"name": "Galaxy Buds2 Pro", "max_input_channels": 1},
@@ -18,6 +19,8 @@ def setup(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "PATH", tmp_path / "config" / "config.toml")
     monkeypatch.setattr(sd, "query_devices", lambda device=None, kind=None: DEVICES if device is None else DEVICES[device])
     monkeypatch.setattr(sd.default, "device", [0, 1])  # earbuds are the system default
+    monkeypatch.setattr(cli.microphones, "connections", lambda: {
+        "Galaxy Buds2 Pro": "coreaudio_device_type_bluetooth", "MacBook Pro Microphone": "coreaudio_device_type_builtin"})
     monkeypatch.setattr(cli.models, "missing", lambda: [])
 
     def search(query, token):
@@ -29,9 +32,14 @@ def setup(tmp_path, monkeypatch):
     answers = iter([])
     monkeypatch.setattr("getpass.getpass", lambda *a, **k: next(answers))  # hidden token input
 
-    def run(*lines, tokens=()):
+    def run(*lines, tokens=(), keys=None):
+        """Typed answers (lines), hidden token answers, and arrow-key presses (which make it interactive)."""
         nonlocal answers
         answers = iter(tokens)
+        if keys is not None:
+            presses = iter(keys)
+            monkeypatch.setattr(cli, "_interactive", lambda: True)
+            monkeypatch.setattr(widgets.terminal, "keys", lambda: contextlib.nullcontext(lambda: next(presses)))
         return CliRunner().invoke(cli.app, ["init"], input="".join(f"{line}\n" for line in lines))
 
     return run
@@ -94,3 +102,19 @@ def test_config_round_trips_awkward_values(tmp_path, monkeypatch):
     config.save(settings)
     assert config.load() == settings
     assert "genius_token" not in config.PATH.read_text()
+
+
+def test_arrow_keys_pick_the_microphone_and_slide_the_ratings(setup, tmp_path):
+    keys = ["up", "enter",  # from the suggested MacBook mic up to the earbuds
+            "down", "enter",  # "Adjust them"
+            "left", "left", "enter",  # pitch 10/10 within 5¢ -> 3¢
+            "enter",  # pitch 0/10 from 25¢, kept
+            "right", "enter",  # timing 10/10 within ±1% -> ±1.5%
+            "up", "enter"]  # timing 0/10 from ±6% -> ±8.5% (a big step)
+    result = setup(str(tmp_path), tokens=[""], keys=keys)
+
+    assert result.exit_code == 0, result.output
+    saved = config.load()
+    assert saved.device == "Galaxy Buds2 Pro"
+    assert (saved.pitch_best_cents, saved.pitch_worst_cents) == (3, 25)
+    assert (saved.timing_best_percent, saved.timing_worst_percent) == (1.5, 8.5)

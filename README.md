@@ -40,17 +40,19 @@ brew install lafarguem/tap/woodshed
 shed init
 ```
 
-`shed init` asks four things, then downloads the models (about 1.9 GB, once). Every
-question has a default, so pressing Enter all the way through works:
+`shed init` asks four things, then downloads the models (about 1.9 GB, once). Pick with the
+arrow keys. Every question has a default, so pressing Enter all the way through works:
 
 1. **Where to save recordings.** Default: `~/Music/Woodshed`.
-2. **Which microphone.** It suggests your Mac's built-in mic. Bluetooth earbuds record at
+2. **Which microphone,** from a list that shows how each is connected. It suggests an audio
+   interface if you have one, else your Mac's built-in mic. Bluetooth earbuds record at
    phone-call quality.
 3. **A Genius access token** (optional) to recognize new songs. Create a free API client
    at https://genius.com/api-clients and click "Generate Access Token". The token is
    checked before it's saved.
-4. **How strict ratings should be** (optional): the reference points below. Changing them
-   re-scores every take instantly.
+4. **How strict ratings should be** (optional): sliders for the reference points below, with a
+   live preview of what example takes would score. Changing them re-scores every take
+   instantly.
 
 Answers go to `~/.config/woodshed/config.toml`, which only you can read. Run
 `shed init` again anytime to change them.
@@ -66,7 +68,7 @@ shed songs harbor           # the takes of one song
 shed play harbor            # its first take, then its latest (any key skips)
 shed progress harbor        # every take's rating, first to latest
 shed play harbor --rating   # your worst take, then your best (or add: pitch, timing)
-shed devices                # microphones you can record from (* = the one in use)
+shed devices                # microphones you can record from, and how they're connected
 shed init                   # change the folder, microphone, token or rating strictness
 ```
 

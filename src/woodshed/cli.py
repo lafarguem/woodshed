@@ -1,6 +1,7 @@
 """shed: record a cover, and Woodshed files it under the song's name."""
 
 import os
+import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -12,7 +13,7 @@ from rich.console import Console
 from rich.prompt import Confirm, FloatPrompt, IntPrompt, Prompt
 from rich.table import Table
 
-from woodshed import audio, config, genius, library as lib, models, rating
+from woodshed import audio, config, genius, library as lib, microphones, models, rating, widgets
 from woodshed.library import Library, Take
 
 # Recognition runs offline; `shed init` downloads the models it needs.
@@ -67,7 +68,10 @@ def init():
     console.print(f"  Timing: 10/10 at ±{settings.timing_best_percent:g}% tempo wobble or steadier, "
                   f"0/10 at ±{settings.timing_worst_percent:g}%")
     console.print("[dim]Changing these re-scores all your takes instantly.[/dim]")
-    if Confirm.ask("Change them?", default=False):
+    if _interactive():
+        if widgets.pick(console, ["Keep them", "Adjust them"]) == 1:
+            _slide_references(settings)
+    elif Confirm.ask("Change them?", default=False):
         settings.pitch_best_cents, settings.pitch_worst_cents = _ask_range(
             "Pitch, in cents off the true note", settings.pitch_best_cents, settings.pitch_worst_cents, limit=50)
         settings.timing_best_percent, settings.timing_worst_percent = _ask_range(
@@ -247,10 +251,12 @@ def devices():
 
     chosen = config.load().device
     default = sd.default.device[0]
+    connections = microphones.connections()
     for i, dev in enumerate(sd.query_devices()):
         if dev["max_input_channels"] > 0:
             marker = "[green]*[/green]" if (dev["name"] == chosen if chosen else i == default) else " "
-            console.print(f"{marker} {i}: {dev['name']} ({dev['max_input_channels']} ch)")
+            kind = microphones.describe(connections.get(dev["name"], ""))
+            console.print(f"{marker} {i}: {dev['name']} ({dev['max_input_channels']} ch)" + (f"  [dim]{kind}[/dim]" if kind else ""))
 
 
 def _find_song(songs: Library, name: str) -> str:
@@ -332,15 +338,15 @@ def _pick_device(current: str | None) -> str | None:
     if not names:
         console.print("[yellow]No microphone found; plug one in and run `shed init` again.[/yellow]")
         return current
+    connections = microphones.connections()
     system_default = sd.default.device[0]
-    builtin = [n for n in names if any(k in n for k in ("MacBook", "iMac", "Built-in", "Studio Display"))]
-    suggested = (current if current in names
-                 else builtin[0] if builtin
-                 else sd.query_devices(system_default)["name"] if system_default >= 0 else names[0])
-    for i, name in enumerate(names, 1):
-        console.print(f"  {i}. {name}")
-    console.print("[dim]Bluetooth earbuds record at phone-call quality: prefer your Mac's microphone "
-                  "or an audio interface.[/dim]")
+    suggested = microphones.suggest(names, connections, current,
+                                    sd.query_devices(system_default)["name"] if system_default >= 0 else None)
+    notes = [microphones.describe(connections.get(name, "")) for name in names]
+    if _interactive():
+        return names[widgets.pick(console, names, names.index(suggested), notes)]
+    for i, (name, note) in enumerate(zip(names, notes), 1):
+        console.print(f"  {i}. {name}" + (f"  [dim]{note}[/dim]" if note else ""))
     number = IntPrompt.ask("Number", choices=[str(i) for i in range(1, len(names) + 1)],
                            default=names.index(suggested) + 1, show_choices=False)
     return names[number - 1]
@@ -364,6 +370,37 @@ def _ask_token(current: str | None) -> str | None:
             return token
         console.print("[green]✓[/green] Token works.")
         return token
+
+
+def _interactive() -> bool:
+    """A real terminal, where arrow-key prompts work (not piped input, nor tests)."""
+    return sys.stdin.isatty() and console.is_terminal
+
+
+def _slide_references(settings: config.Config) -> None:
+    def examples(values: list[float], fmt: str, references: rating.References, key: str) -> str:
+        measure = (lambda v: rating.Metrics(v, None)) if key == "pitch" else (lambda v: rating.Metrics(None, v / 100))
+        return "  ·  ".join(f"{fmt.format(v)} → {rating.scores(measure(v), references)[key]:.1f}" for v in values)
+
+    def pitch(best: float, worst: float) -> str:
+        return "A take " + examples([8, 12, 16, 20], "{:g}¢ off", rating.References(pitch_cents=(best, worst)), "pitch")
+
+    def timing(best: float, worst: float) -> str:
+        return "A take " + examples([1.5, 2.5, 4, 5], "±{:g}%", rating.References(tempo_spread=(best / 100, worst / 100)),
+                                    "timing")
+
+    cents, percent = "{:g}¢".format, "±{:g}%".format
+    s = settings
+    s.pitch_best_cents = widgets.slide(console, "  Pitch scores 10/10 within", s.pitch_best_cents, 0,
+                                       s.pitch_worst_cents - 1, 1, cents, lambda v: pitch(v, s.pitch_worst_cents))
+    s.pitch_worst_cents = widgets.slide(console, "  Pitch scores 0/10 from", s.pitch_worst_cents, s.pitch_best_cents + 1,
+                                        50, 1, cents, lambda v: pitch(s.pitch_best_cents, v))
+    s.timing_best_percent = widgets.slide(console, "  Timing scores 10/10 within", s.timing_best_percent, 0,
+                                          s.timing_worst_percent - 0.5, 0.5, percent,
+                                          lambda v: timing(v, s.timing_worst_percent))
+    s.timing_worst_percent = widgets.slide(console, "  Timing scores 0/10 from", s.timing_worst_percent,
+                                           s.timing_best_percent + 0.5, 15, 0.5, percent,
+                                           lambda v: timing(s.timing_best_percent, v))
 
 
 def _ask_range(label: str, best: float, worst: float, limit: float | None = None) -> tuple[float, float]:
