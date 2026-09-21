@@ -1,6 +1,7 @@
 """shed: record a cover, and Woodshed files it under the song's name."""
 
 import os
+import shlex
 import sys
 from dataclasses import dataclass
 from datetime import datetime
@@ -10,6 +11,7 @@ from typing import Annotated
 import typer
 from mutagen.mp3 import MP3
 from rich.console import Console
+from rich.markup import escape
 from rich.prompt import Confirm, FloatPrompt, IntPrompt, Prompt
 from rich.table import Table
 
@@ -46,7 +48,11 @@ class Choice:
 def init():
     """Choose where recordings go, your microphone, your Genius token, and how strict ratings are."""
     os.environ["HF_HUB_OFFLINE"] = "0"  # this is where the models get downloaded
-    settings = config.load()
+    try:
+        settings = config.load()
+    except config.Unreadable:  # start over, rather than leave no way to fix it but a text editor
+        console.print(f"[yellow]Can't read {escape(_tilde(config.PATH))}, so starting from the defaults.[/yellow]\n")
+        settings = config.Config()
     console.print("[bold]Let's set up Woodshed.[/bold] Press Enter to keep the value in brackets.\n")
 
     console.print("[bold]1. Where should your recordings go?[/bold]")
@@ -75,10 +81,10 @@ def init():
         settings.pitch_best_cents, settings.pitch_worst_cents = _ask_range(
             "Pitch, in cents off the true note", settings.pitch_best_cents, settings.pitch_worst_cents, limit=50)
         settings.timing_best_percent, settings.timing_worst_percent = _ask_range(
-            "Timing, in ± % tempo wobble", settings.timing_best_percent, settings.timing_worst_percent)
+            "Timing, in ± % tempo wobble", settings.timing_best_percent, settings.timing_worst_percent, limit=15)
 
     config.save(settings)
-    console.print(f"\n[green]✓[/green] Saved to {_tilde(config.PATH)}")
+    console.print(f"\n[green]✓[/green] Saved to {escape(_tilde(config.PATH))}")
 
     if missing := models.missing():
         console.print(f"Downloading {', '.join(missing)} (about 1.9 GB, only once)…")
@@ -97,6 +103,8 @@ def rec(
     isolate: IsolateOpt = True,
 ):
     """Record a take, recognize the song, and file it."""
+    import sounddevice as sd
+
     from woodshed.recorder import record
 
     settings = _settings()
@@ -106,14 +114,15 @@ def rec(
     raw = songs.incoming / f"{started:%Y-%m-%d_%H-%M-%S}.wav"
     try:
         record(raw, console, int(device) if device and device.isdigit() else device, channels, auto_stop)
-    except ValueError as e:  # sounddevice: no such device
-        console.print(f"[red]Can't record from “{device}”: {e}.[/red] Plug it in, or pick another "
-                      "microphone with `shed init` or --device.")
+    except (ValueError, sd.PortAudioError) as e:  # no such device, or it can't record that way (e.g. --channels)
+        console.print(f"[red]Can't record from “{escape(device or 'your default microphone')}”: {escape(str(e))}."
+                      "[/red] Plug it in, or pick another microphone with `shed init` or --device.")
         raise typer.Exit(1)
     try:
         _file_take(raw, started, songs, language, isolate, settings.genius_token, from_mic=True)
     except BaseException:
-        console.print(f"[yellow]Your recording is safe in {raw}; run `shed add` on it to try again.[/yellow]")
+        console.print(f"[yellow]Your recording is safe in {escape(str(raw))}; run `shed add` on it to try again."
+                      "[/yellow]")
         raise
     raw.unlink()
 
@@ -128,9 +137,22 @@ def add(
     """File recordings you already have, e.g. voice memos. The originals are left untouched."""
     settings = _settings()
     songs = Library(library or Path(settings.library))
+    waiting = {p.resolve() for p in songs.waiting()}  # Woodshed's own raw copies, from a `shed rec` that failed
+    unreadable = 0
     for path in files:
-        console.rule(path.name)
-        _file_take(path, audio.recorded_at(path), songs, language, isolate, settings.genius_token, from_mic=False)
+        console.rule(escape(path.name))
+        try:
+            saved = _file_take(path, audio.recorded_at(path), songs, language, isolate, settings.genius_token,
+                               from_mic=False)
+        except audio.AudioError as e:  # not audio, or damaged: say so, and go on with the others
+            reason = str(e).splitlines()[-1] if str(e) else "ffmpeg couldn't decode it"
+            console.print(f"[red]Can't read {escape(path.name)}: {escape(reason)}[/red]")
+            unreadable += 1
+            continue
+        if saved and path.resolve() in waiting:  # filed at last: the raw copy has done its job
+            path.unlink()
+    if unreadable:
+        raise typer.Exit(1)
 
 
 @app.command(name="songs")
@@ -139,24 +161,28 @@ def list_songs(
     library: LibraryOpt = None,
 ):
     """List your songs, or the takes of one song."""
-    songs = Library(library or Path(config.load().library))
+    songs = _existing_library(library, config.load())
     catalog = songs.songs()
     if name:
         song = _find_song(songs, name)
-        table = Table("#", "Recorded", "Length", title=song, title_justify="left")
+        table = Table("#", "Recorded", "Length", title=escape(song), title_justify="left")
         for i, path in enumerate(catalog[song], 1):
             table.add_row(str(i), _when(path), _length(path))
         console.print(table)
-        console.print(f"[dim]{songs.root / song}[/dim]")
+        console.print(f"[dim]{escape(str(songs.root / song))}[/dim]")
         return
 
     table = Table("Song", "Takes", "First", "Latest")
     for song, takes in catalog.items():
-        table.add_row(song, str(len(takes)), *((_when(takes[0]), _when(takes[-1])) if takes else ("", "")))
+        table.add_row(escape(song), str(len(takes)), *((_when(takes[0]), _when(takes[-1])) if takes else ("", "")))
     console.print(table)
     if unsorted := songs.unsorted():
-        console.print(f"{len(unsorted)} take(s) waiting in [bold]{songs.root / lib.UNSORTED}[/bold]; "
+        console.print(f"{len(unsorted)} take(s) waiting in [bold]{escape(str(songs.root / lib.UNSORTED))}[/bold]; "
                       "move them into a song folder to file them.")
+    if waiting := songs.waiting():
+        folder = shlex.quote(str(waiting[0].parent))
+        console.print(f"[yellow]{len(waiting)} recording(s) couldn't be filed yet. File them with:[/yellow] "
+                      f"shed add {escape(folder)}/*.wav")
 
 
 @app.command()
@@ -171,15 +197,15 @@ def play(
     from woodshed import player
 
     if metric is not None and metric not in rating.METRICS:
-        console.print(f"“{metric}” isn't a rating; use {' or '.join(rating.METRICS)}. "
+        console.print(f"“{escape(metric)}” isn't a rating; use {' or '.join(rating.METRICS)}. "
                       'Quote song names with spaces: shed play "harbor lights"')
         raise typer.Exit(1)
     settings = config.load()
-    songs = Library(library or Path(settings.library))
+    songs = _existing_library(library, settings)
     song = _find_song(songs, name)
     takes = songs.takes_of(song)
     if not takes:
-        console.print(f"“{song}” has no takes yet.")
+        console.print(f"“{escape(song)}” has no takes yet.")
         raise typer.Exit(1)
 
     if by_rating or metric:
@@ -188,7 +214,7 @@ def play(
         rated = [(rating.scores(t.metrics, references)[key], number, t) for number, t in enumerate(_rate(songs, takes), 1)
                  if t.metrics and rating.scores(t.metrics, references)[key] is not None]
         if not rated:
-            console.print(f"None of the takes of “{song}” could be rated on {key}.")
+            console.print(f"None of the takes of “{escape(song)}” could be rated on {key}.")
             raise typer.Exit(1)
         worst, best = min(rated, key=lambda r: r[:2]), max(rated, key=lambda r: r[:2])
         picks = [("worst", worst), ("best", best)] if len(rated) > 1 else [("only rated", worst)]
@@ -201,7 +227,7 @@ def play(
                  for n in dict.fromkeys([1, len(takes)])]
 
     for label, number, take, detail in picks:
-        console.print(f"[green]▶[/green] [bold]{song}[/bold], {label} ({number} of {len(takes)}), "
+        console.print(f"[green]▶[/green] [bold]{escape(song)}[/bold], {label} ({number} of {len(takes)}), "
                       f"recorded {_when(take.path)}{detail}")
         if not player.play(take.path, console):
             break
@@ -215,14 +241,14 @@ def progress(
     """Rate every take of a song, from first to latest."""
     settings = config.load()
     references = settings.references()
-    songs = Library(library or Path(settings.library))
+    songs = _existing_library(library, settings)
     song = _find_song(songs, name)
     takes = _rate(songs, songs.takes_of(song))
     if not takes:
-        console.print(f"“{song}” has no takes yet.")
+        console.print(f"“{escape(song)}” has no takes yet.")
         raise typer.Exit(1)
 
-    table = Table("#", "Recorded", "Rating", "Pitch", "Timing", title=song, title_justify="left")
+    table = Table("#", "Recorded", "Rating", "Pitch", "Timing", title=escape(song), title_justify="left")
     for number, take in enumerate(takes, 1):
         if take.metrics is None:
             table.add_row(str(number), _when(take.path), "–", "–", "–")
@@ -249,14 +275,25 @@ def devices():
     """List the microphones and audio interfaces you can record from."""
     import sounddevice as sd
 
-    chosen = config.load().device
+    chosen = os.environ.get("WOODSHED_DEVICE") or config.load().device  # what `shed rec` records from
     default = sd.default.device[0]
     connections = microphones.connections()
     for i, dev in enumerate(sd.query_devices()):
         if dev["max_input_channels"] > 0:
-            marker = "[green]*[/green]" if (dev["name"] == chosen if chosen else i == default) else " "
+            in_use = chosen in (str(i), dev["name"]) if chosen else i == default
+            marker = "[green]*[/green]" if in_use else " "
             kind = microphones.describe(connections.get(dev["name"], ""))
-            console.print(f"{marker} {i}: {dev['name']} ({dev['max_input_channels']} ch)" + (f"  [dim]{kind}[/dim]" if kind else ""))
+            console.print(f"{marker} {i}: {escape(dev['name'])} ({dev['max_input_channels']} ch)" + (f"  [dim]{kind}[/dim]" if kind else ""))
+
+
+def _existing_library(library: Path | None, settings: config.Config) -> Library:
+    """The library, for commands that only read it: a mistyped --library mustn't create a folder."""
+    songs = Library(library or Path(settings.library))
+    if not songs.root.is_dir():
+        console.print(f"There's no library at {escape(str(songs.root))}. Check --library or WOODSHED_DIR, "
+                      "or run `shed init`.")
+        raise typer.Exit(1)
+    return songs
 
 
 def _find_song(songs: Library, name: str) -> str:
@@ -265,7 +302,7 @@ def _find_song(songs: Library, name: str) -> str:
     song = songs.find_song(name) or (partial[0] if len(partial) == 1 else None)
     if song is None:
         hint = f"; did you mean {' or '.join(partial)}?" if partial else f" in {songs.root}"
-        console.print(f"No song called “{name}”{hint}")
+        console.print(f"No song called “{escape(name)}”{escape(hint)}")
         raise typer.Exit(1)
     return song
 
@@ -346,7 +383,7 @@ def _pick_device(current: str | None) -> str | None:
     if _interactive():
         return names[widgets.pick(console, names, names.index(suggested), notes)]
     for i, (name, note) in enumerate(zip(names, notes), 1):
-        console.print(f"  {i}. {name}" + (f"  [dim]{note}[/dim]" if note else ""))
+        console.print(f"  {i}. {escape(name)}" + (f"  [dim]{note}[/dim]" if note else ""))
     number = IntPrompt.ask("Number", choices=[str(i) for i in range(1, len(names) + 1)],
                            default=names.index(suggested) + 1, show_choices=False)
     return names[number - 1]
@@ -366,7 +403,7 @@ def _ask_token(current: str | None) -> str | None:
             current = None
             continue
         except genius.GeniusError as e:
-            console.print(f"[yellow]{e}; saving the token anyway.[/yellow]")
+            console.print(f"[yellow]{escape(str(e))}; saving the token anyway.[/yellow]")
             return token
         console.print("[green]✓[/green] Token works.")
         return token
@@ -421,21 +458,23 @@ def _tilde(path: Path) -> str:
 
 
 def _file_take(src: Path, recorded: datetime, songs: Library, language: str | None,
-               isolate_voice: bool, genius_token: str | None, from_mic: bool) -> None:
+               isolate_voice: bool, genius_token: str | None, from_mic: bool) -> Path | None:
+    """File one take. Returns where it was saved, or None if it wasn't kept (silent, or too short)."""
     from woodshed import isolate, transcribe
 
     with console.status("Listening to the take…"):
         samples = audio.load(src)
         start, end = audio.playing_bounds(samples)
     if from_mic and (samples.size == 0 or abs(samples).max() < 1e-4):
-        console.print("[yellow]The recording is completely silent. Allow your terminal app to use the "
-                      "microphone in System Settings → Privacy & Security → Microphone.[/yellow]")
+        console.print("[yellow]The recording is completely silent, so it wasn't kept. Allow your terminal app to "
+                      "use the microphone in System Settings → Privacy & Security → Microphone.[/yellow]")
+        return None
     if end <= start:
         start, end = 0.0, len(samples) / audio.SAMPLE_RATE
     if from_mic and end - start < MIN_TAKE_SECONDS:
         if not Confirm.ask(f"Only {end - start:.0f}s of playing. Keep this take?", default=False):
             console.print("Discarded.")
-            return
+            return None
 
     seconds = min(LISTEN_SECONDS, end - start)
     metrics = None
@@ -454,28 +493,32 @@ def _file_take(src: Path, recorded: datetime, songs: Library, language: str | No
     choice = _identify(lines, songs, genius_token)
     earlier = [t for t in songs.takes_of(choice.song) if t.metrics] if choice.song else []
     dest = songs.add_take(src, choice.song, start, end, recorded, lines, choice.genius_id, choice.artist, metrics)
-    number = f" (take #{len(list(dest.parent.glob('*.mp3')))})" if choice.song else ""
-    console.print(f"[green]✓[/green] Saved [bold]{dest.relative_to(songs.root)}[/bold]{number}")
+    number = ""
+    if choice.song:  # counted by date, as `play` and `progress` do: an old voice memo can be take 1 of 4
+        takes = sorted(dest.parent.glob("*.mp3"))
+        number = f" (take {takes.index(dest) + 1} of {len(takes)})"
+    console.print(f"[green]✓[/green] Saved [bold]{escape(str(dest.relative_to(songs.root)))}[/bold]{number}")
     if metrics:
         console.print(_rating_line(metrics, earlier, config.load().references()))
+    return dest
 
 
 def _identify(lines: list[str], songs: Library, genius_token: str | None) -> Choice:
     if lines:
         heard = " / ".join(lines)
-        console.print(f"[dim]Heard: “{heard[:90]}{'…' if len(heard) > 90 else ''}”[/dim]")
+        console.print(f"[dim]Heard: “{escape(heard[:90])}{'…' if len(heard) > 90 else ''}”[/dim]")
     else:
         console.print("[dim]Didn't hear any lyrics.[/dim]")
 
     ranked = songs.match(lines)
     if lib.is_confident(lines, ranked):
-        console.print(f"Recognized [bold]{ranked[0][0]}[/bold] from your earlier takes.")
+        console.print(f"Recognized [bold]{escape(ranked[0][0])}[/bold] from your earlier takes.")
         return Choice(ranked[0][0])
 
     candidates = _search_genius(lines, genius_token)
     if genius.is_confident(candidates):
         top = candidates[0]
-        console.print(f"Recognized [bold]{top.title}[/bold] by {top.artist} on Genius.")
+        console.print(f"Recognized [bold]{escape(top.title)}[/bold] by {escape(top.artist)} on Genius.")
         return _choice_for(top, songs)
     return _ask(ranked, candidates[0] if candidates else None, songs)
 
@@ -490,7 +533,7 @@ def _search_genius(lines: list[str], token: str | None) -> list[genius.Candidate
         with console.status("Looking the lyrics up on Genius…"):
             return genius.identify(lines, token)
     except genius.GeniusError as e:
-        console.print(f"[yellow]{e}[/yellow]")
+        console.print(f"[yellow]{escape(str(e))}[/yellow]")
         return []
 
 
@@ -504,10 +547,11 @@ def _choice_for(candidate: genius.Candidate, songs: Library) -> Choice:
 def _ask(ranked: list[tuple[str, float]], suggestion: genius.Candidate | None, songs: Library) -> Choice:
     options: list[tuple[Choice, str]] = []
     if suggestion:
-        options.append((_choice_for(suggestion, songs), f"{suggestion.title} — {suggestion.artist} [dim](Genius)[/dim]"))
+        options.append((_choice_for(suggestion, songs),
+                        f"{escape(suggestion.title)} — {escape(suggestion.artist)} [dim](Genius)[/dim]"))
     for song, score in ranked[:3]:
         if score > 0.03 and all(choice.song != song for choice, _ in options):
-            options.append((Choice(song), f"{song} [dim](your songs)[/dim]"))
+            options.append((Choice(song), f"{escape(song)} [dim](your songs)[/dim]"))
 
     console.print("[bold]Which song is this?[/bold]")
     for i, (_, label) in enumerate(options, 1):
@@ -544,7 +588,7 @@ def _input(prompt: str, completions: list[str]) -> str:
 
 def _when(path: Path) -> str:
     stamp = lib.take_time(path)
-    return f"{stamp:%Y-%m-%d %H:%M}" if stamp else path.stem
+    return f"{stamp:%Y-%m-%d %H:%M}" if stamp else escape(path.stem)  # a file you put there yourself
 
 
 def _length(path: Path) -> str:

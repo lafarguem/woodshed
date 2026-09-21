@@ -15,6 +15,10 @@ PATH = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "woo
 DEFAULT_LIBRARY = "~/Music/Woodshed"
 
 
+class Unreadable(SystemExit):
+    """config.toml isn't valid TOML. Every command stops with this message, except `shed init`, which starts over."""
+
+
 @dataclass
 class Config:
     library: str = DEFAULT_LIBRARY
@@ -45,7 +49,7 @@ def load() -> Config:
     except FileNotFoundError:
         return Config()
     except tomllib.TOMLDecodeError as e:
-        raise SystemExit(f"Can't read {PATH}: {e}. Fix it or run `shed init` again.") from None
+        raise Unreadable(f"Can't read {PATH}: {e}. Fix it or run `shed init` again.") from None
     known = {f.name for f in fields(Config)}
     return Config(**{key: value for key, value in data.items() if key in known})
 
@@ -55,5 +59,7 @@ def save(config: Config) -> None:
     PATH.touch(mode=0o600, exist_ok=True)
     PATH.chmod(0o600)  # it holds your Genius token
     values = {f.name: getattr(config, f.name) for f in fields(Config)}
-    # A JSON string is also a valid TOML string.
-    PATH.write_text("".join(f"{key} = {json.dumps(value)}\n" for key, value in values.items() if value is not None))
+    # A JSON string is also a valid TOML string, as long as characters like 🎸 are written as they are:
+    # JSON would escape them as surrogate pairs (🎸), which TOML refuses.
+    PATH.write_text("".join(f"{key} = {json.dumps(value, ensure_ascii=False)}\n"
+                            for key, value in values.items() if value is not None))

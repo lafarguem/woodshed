@@ -1,5 +1,5 @@
-# Pushing a vX.Y.Z tag creates a GitHub release and publishes Formula/woodshed.rb
-# to lafarguem/homebrew-tap.
+# Pushing a vX.Y.Z tag runs the tests, then creates a GitHub release and publishes
+# Formula/woodshed.rb to lafarguem/homebrew-tap.
 name: release
 
 on:
@@ -7,11 +7,32 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  test:
+    # On an Apple Silicon Mac with Homebrew's Python, like the installed formula. The tests that need
+    # the downloaded models skip themselves.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install ffmpeg, uv, and the Python the formula uses
+        run: brew install ffmpeg uv python@3.14
+
+      - name: Run the tests
+        env:
+          UV_PYTHON_DOWNLOADS: never
+        run: |
+          export UV_PYTHON="$(brew --prefix python@3.14)/bin/python3.14"
+          uv sync --frozen
+          uv run --frozen pytest
+
   release:
+    needs: test
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}

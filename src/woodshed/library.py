@@ -77,24 +77,29 @@ def is_confident(lines: list[str], ranked: list[tuple[str, float]]) -> bool:
 
 class Library:
     def __init__(self, root: Path):
-        self.root = root.expanduser()
-        self.root.mkdir(parents=True, exist_ok=True)
+        self.root = root.expanduser()  # created by the first take filed there, not by reading it
 
     @property
     def incoming(self) -> Path:
         """Where raw recordings wait until they're filed."""
         path = self.root / _INCOMING
-        path.mkdir(exist_ok=True)
+        path.mkdir(parents=True, exist_ok=True)
         return path
 
     def songs(self) -> dict[str, list[Path]]:
         """Song name -> its takes, oldest first."""
+        if not self.root.is_dir():
+            return {}
         folders = [p for p in self.root.iterdir()
                    if p.is_dir() and not p.name.startswith(".") and p.name != UNSORTED]
         return {f.name: sorted(f.glob("*.mp3")) for f in sorted(folders, key=lambda p: p.name.casefold())}
 
     def unsorted(self) -> list[Path]:
         return sorted((self.root / UNSORTED).glob("*.mp3"))
+
+    def waiting(self) -> list[Path]:
+        """Raw recordings that couldn't be filed (e.g. filing crashed), oldest first."""
+        return sorted((self.root / _INCOMING).glob("*.wav"))
 
     def takes(self) -> list[Take]:
         return [_read(path, song) for song, paths in self.songs().items() for path in paths]
@@ -129,7 +134,7 @@ class Library:
                  metrics: Metrics | None = None) -> Path:
         """Encode the playing part of `src` into the song's folder (or Unsorted) as <date>_<time>.mp3."""
         folder = self.root / (song or UNSORTED)
-        folder.mkdir(exist_ok=True)
+        folder.mkdir(parents=True, exist_ok=True)
         dest = folder / f"{recorded:{_STAMP}}.mp3"
         n = 2
         while dest.exists():

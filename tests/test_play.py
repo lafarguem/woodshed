@@ -115,6 +115,14 @@ def test_progress_shows_every_take_and_the_trend(songs):
     assert "6.2 → 6.5 since your first take; best 6.5 (take 3)" in text(result)
 
 
+@pytest.mark.parametrize("command", [["songs"], ["play", "harbor"], ["progress", "harbor"]])
+def test_a_mistyped_library_is_reported_not_created(tmp_path, command):
+    typo = tmp_path / "Woodshd"
+    result = CliRunner().invoke(cli.app, [*command, "--library", str(typo)])
+    assert result.exit_code == 1 and "There's no library at" in text(result)
+    assert not typo.exists()
+
+
 def test_stricter_reference_points_lower_every_score(songs, tmp_path, monkeypatch):
     from woodshed import config
 

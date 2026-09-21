@@ -104,6 +104,39 @@ def test_config_round_trips_awkward_values(tmp_path, monkeypatch):
     assert "genius_token" not in config.PATH.read_text()
 
 
+@pytest.mark.parametrize("chosen", ["MacBook Pro Microphone", "2"])  # a name or a number, as with `rec --device`
+def test_devices_marks_the_microphone_rec_would_use(setup, monkeypatch, chosen):
+    monkeypatch.setenv("WOODSHED_DEVICE", chosen)
+    result = CliRunner().invoke(cli.app, ["devices"])
+
+    assert result.exit_code == 0, result.output
+    marked = [line for line in result.output.splitlines() if line.startswith("*")]
+    assert len(marked) == 1 and "MacBook Pro Microphone" in marked[0]
+
+
+def test_emoji_in_names_dont_break_the_config():
+    settings = config.Config("~/Music/🎸 Covers", "Studio Mic 🎙", None)
+    config.save(settings)
+    assert config.load() == settings
+
+
+def test_init_starts_over_from_an_unreadable_config(setup, tmp_path):
+    config.PATH.parent.mkdir(parents=True)
+    config.PATH.write_text('library = "~/Music/\\ud83c\\udfb8 Covers"\n')  # as older versions wrote emoji
+    result = setup(str(tmp_path / "lib"), "", "", tokens=[""])
+
+    assert result.exit_code == 0, result.output
+    assert "starting from the defaults" in result.output
+    assert config.load().library == str(tmp_path / "lib")
+
+
+def test_an_endless_timing_range_is_asked_again(setup, tmp_path):
+    result = setup(str(tmp_path), "", "y", "", "", "1", "inf", "1", "8", tokens=[""])
+    assert result.exit_code == 0, result.output
+    assert "at most 15" in result.output
+    assert config.load().references().tempo_spread == (0.01, 0.08)
+
+
 def test_arrow_keys_pick_the_microphone_and_slide_the_ratings(setup, tmp_path):
     keys = ["up", "enter",  # from the suggested MacBook mic up to the earbuds
             "down", "enter",  # "Adjust them"

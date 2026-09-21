@@ -3,7 +3,17 @@ import subprocess
 
 import pytest
 
+from woodshed import config
 from woodshed.lyrics import words
+
+
+@pytest.fixture(autouse=True)
+def own_settings(tmp_path, monkeypatch):
+    """Keep every test off your own config.toml and WOODSHED_* variables, so how you set up
+    Woodshed (e.g. stricter ratings) can't change what the tests see."""
+    monkeypatch.setattr(config, "PATH", tmp_path / "settings" / "config.toml")
+    for name in ("WOODSHED_DIR", "WOODSHED_DEVICE", "WOODSHED_LANGUAGE", "GENIUS_ACCESS_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
 
 # Invented lyrics, so tests don't depend on real songs.
 SONGS = {
@@ -85,6 +95,15 @@ def strums(seconds: float, bpm: float, speed_up: float = 0.0) -> "np.ndarray":
         out[i:i + SR] += pluck
         t += 30 / (bpm * (1 + speed_up * t / seconds))
     return out[: int(seconds * SR)] * 0.1
+
+
+def ring_out(seconds: float) -> "np.ndarray":
+    """The last chord left ringing into room noise: how a take ends (filing keeps 1.5 s past the playing)."""
+    import numpy as np
+
+    t = np.arange(int(seconds * SR)) / SR
+    chord = sum(np.sin(2 * np.pi * f * t) for f in (110, 165, 220, 277)) * np.exp(-1.2 * t) * 0.1
+    return (chord + np.random.default_rng(0).normal(0, 1e-3, t.size)).astype(np.float32)
 
 
 def held_chords(seconds: float, bpm: float, speed_up: float = 0.0) -> "np.ndarray":

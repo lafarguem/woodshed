@@ -44,12 +44,12 @@ def record(dest: Path, console: Console, device: int | str | None = None,
         wav.writeframes((np.clip(block, -1, 1) * 32767).astype("<i2").tobytes())
         return 10 * np.log10(np.mean(block**2) + 1e-12)
 
+    # Opened before the file, so a microphone that can't record this way leaves no empty take behind.
+    stream = sd.InputStream(device=device, channels=channels, samplerate=rate, dtype="float32", callback=on_audio)
     with wave.open(str(dest), "wb") as wav:
         wav.setnchannels(channels)
         wav.setsampwidth(2)
         wav.setframerate(rate)
-        stream = sd.InputStream(device=device, channels=channels, samplerate=rate,
-                                dtype="float32", callback=on_audio)
         started = last_sound = time.monotonic()
         heard_anything = False
         with stream, keypress() as pressed, Live(console=console, transient=True, refresh_per_second=15) as live:

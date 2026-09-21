@@ -150,7 +150,8 @@ def _tempo_spread(accompaniment: np.ndarray, rate: int) -> float | None:
     y = librosa.resample(accompaniment, orig_sr=rate, target_sr=sr)
     if len(y) < sr * (2 * EDGE_SECONDS + 20) or np.sqrt(np.mean(y**2)) < 1e-3:  # too short, or a cappella
         return None
-    middle = y[len(y) // 2 - 30 * sr: len(y) // 2 + 30 * sr]  # a minute is plenty to tell the instrument
+    mid = len(y) // 2
+    middle = y[max(0, mid - 30 * sr): mid + 30 * sr]  # a minute is plenty to tell the instrument
     harmonic, percussive = librosa.effects.hpss(middle)
     if np.sum(percussive**2) < _SUSTAINED * (np.sum(harmonic**2) + np.sum(percussive**2)):
         return _chord_change_spread(y, sr)

@@ -2,7 +2,7 @@ import random
 
 import numpy as np
 import pytest
-from conftest import SR, held_chords, strums, sung_notes
+from conftest import SR, held_chords, ring_out, strums, sung_notes
 
 from woodshed import models, rating
 from woodshed.isolate import Stems
@@ -79,6 +79,16 @@ def test_sustained_chords_are_timed_by_their_changes():
     steady = rating._tempo_spread(held_chords(75, bpm=90), SR)
     rushed = rating._tempo_spread(held_chords(75, bpm=90, speed_up=0.12), SR)
     assert steady < 0.02 and rushed > 2 * steady
+
+
+def test_takes_under_a_minute_are_timed_by_their_strumming(monkeypatch):
+    # Under a minute, the instrument used to be told from the take's last seconds: its final chord ringing out,
+    # which reads as sustained, so a 56 s strummed take was timed by chord changes (3 points harsher when rushing).
+    used = []
+    monkeypatch.setattr(rating, "_attack_spread", lambda y, sr: used.append("attacks"))
+    monkeypatch.setattr(rating, "_chord_change_spread", lambda y, sr: used.append("chord changes"))
+    rating._tempo_spread(np.concatenate([strums(53, bpm=100), ring_out(3)]), SR)
+    assert used == ["attacks"]
 
 
 def test_a_cappella_has_no_timing_rating():

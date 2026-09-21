@@ -131,7 +131,8 @@ from each take's saved measurements, so nothing gets re-analyzed.
 Each mp3 carries its own transcript and rating in its tags, so you can reorganize in Finder. Move a
 misfiled take into the right folder, or rename a folder to rename the song, and Woodshed
 follows. Raw recordings wait in the hidden `.incoming/` folder until they're filed, so a
-crash never loses a take.
+crash never loses a take: `shed songs` tells you when one is waiting, and `shed add` files it
+(then removes the raw copy).
 
 ## Development
 
@@ -145,8 +146,10 @@ uv run shed --help
 
 ## Releasing
 
-Pushing a version tag runs `.github/workflows/release.yml`. It creates a GitHub release
-and publishes an updated formula (rendered from `packaging/woodshed.rb.in`) to
+Pushing a version tag runs `.github/workflows/release.yml`. It runs the tests on an Apple
+Silicon Mac with Homebrew's Python 3.14 (what the formula installs, and what `.python-version`
+pins for development). If they pass, it creates a GitHub release and publishes an updated
+formula (rendered from `packaging/woodshed.rb.in`) to
 [`lafarguem/homebrew-tap`](https://github.com/lafarguem/homebrew-tap).
 
 1. Bump `version` in `pyproject.toml` and refresh the lockfile: `uv lock`
