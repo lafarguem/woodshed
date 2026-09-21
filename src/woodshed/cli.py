@@ -43,7 +43,7 @@ class Choice:
 
 @app.command()
 def init():
-    """Choose where recordings go, which microphone to use, and your Genius token."""
+    """Choose where recordings go, your microphone, your Genius token, and how strict ratings are."""
     os.environ["HF_HUB_OFFLINE"] = "0"  # this is where the models get downloaded
     settings = config.load()
     console.print("[bold]Let's set up Woodshed.[/bold] Press Enter to keep the value in brackets.\n")
