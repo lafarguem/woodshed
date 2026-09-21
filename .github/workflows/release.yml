@@ -1,0 +1,60 @@
+# Pushing a vX.Y.Z tag creates a GitHub release and publishes Formula/woodshed.rb
+# to lafarguem/homebrew-tap.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Check the tag matches pyproject.toml
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match version $version in pyproject.toml"
+            exit 1
+          fi
+
+      - name: Create the GitHub release
+        run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes
+
+      - name: Render the formula
+        run: |
+          url="https://github.com/$GITHUB_REPOSITORY/archive/refs/tags/$GITHUB_REF_NAME.tar.gz"
+          sha=$(curl -sSfL "$url" | sha256sum | cut -d' ' -f1)
+          sed -e "s|@URL@|$url|" -e "s|@SHA256@|$sha|" packaging/woodshed.rb.in > woodshed.rb
+          cat woodshed.rb
+
+      - name: Check out the tap
+        if: env.TAP_TOKEN != ''
+        uses: actions/checkout@v6
+        with:
+          repository: lafarguem/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+
+      - name: Publish the formula
+        if: env.TAP_TOKEN != ''
+        run: |
+          cp woodshed.rb tap/Formula/woodshed.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/woodshed.rb
+          git commit -m "woodshed ${GITHUB_REF_NAME#v}"
+          git push
+
+      - name: Explain a skipped publish
+        if: env.TAP_TOKEN == ''
+        run: echo "::warning::HOMEBREW_TAP_TOKEN isn't set on this repo, so the formula wasn't published to the tap."

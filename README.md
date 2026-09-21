@@ -31,11 +31,10 @@ lines.
 
 ## Setup
 
-Needs macOS on Apple Silicon, [uv](https://docs.astral.sh/uv/) and ffmpeg
-(`brew install uv ffmpeg`).
+Needs a Mac with Apple Silicon.
 
 ```sh
-uv tool install --editable .     # puts `shed` on your PATH
+brew install lafarguem/tap/woodshed
 shed init
 ```
 
@@ -90,6 +89,32 @@ crash never loses a take.
 
 ## Development
 
+Needs [uv](https://docs.astral.sh/uv/) and ffmpeg (`brew install uv ffmpeg`).
+
 ```sh
+uv sync
 uv run pytest
+uv run shed --help
 ```
+
+## Releasing
+
+Pushing a version tag runs `.github/workflows/release.yml`. It creates a GitHub release
+and publishes an updated formula (rendered from `packaging/woodshed.rb.in`) to
+[`lafarguem/homebrew-tap`](https://github.com/lafarguem/homebrew-tap).
+
+1. Bump `version` in `pyproject.toml` and refresh the lockfile: `uv lock`
+2. Commit the bump: `git commit -am "Release v0.2.0"`
+3. Tag and push: `git tag v0.2.0 && git push origin main --tags`
+4. Watch it run: `gh run watch`
+
+Users then get it with `brew upgrade woodshed`.
+
+The workflow needs a Personal Access Token with write access to the tap, saved as the
+`HOMEBREW_TAP_TOKEN` secret on this repo (the default `GITHUB_TOKEN` can't push to
+another repository). Without the secret, the release is still created and the formula
+publish is skipped with a warning.
+
+## License
+
+MIT, see [LICENSE](LICENSE).

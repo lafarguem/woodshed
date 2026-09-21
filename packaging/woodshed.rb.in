@@ -1,0 +1,33 @@
+class Woodshed < Formula
+  desc "Records your covers and files each take under the song's name"
+  homepage "https://github.com/lafarguem/woodshed"
+  url "@URL@"
+  sha256 "@SHA256@"
+  license "MIT"
+
+  depends_on "uv" => :build
+  depends_on arch: :arm64 # Whisper runs on MLX, which needs Apple Silicon
+  depends_on "ffmpeg"
+  depends_on :macos
+  depends_on "python@3.14"
+
+  def install
+    # A self-contained environment built from uv.lock on Homebrew's Python.
+    ENV["UV_PYTHON_DOWNLOADS"] = "never"
+    ENV["UV_PROJECT_ENVIRONMENT"] = libexec.to_s
+    system "uv", "sync", "--frozen", "--no-dev", "--no-editable",
+           "--python", formula_opt_bin("python@3.14")/"python3.14"
+    bin.install_symlink libexec/"bin/shed"
+  end
+
+  def caveats
+    <<~EOS
+      Run `shed init` to choose where recordings go and which microphone to use,
+      add an optional Genius token, and download the models (about 1.7 GB).
+    EOS
+  end
+
+  test do
+    assert_match "Record a take", shell_output("#{bin}/shed --help")
+  end
+end
