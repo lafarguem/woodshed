@@ -11,6 +11,10 @@ class Woodshed < Formula
   depends_on :macos
   depends_on "python@3.14"
 
+  # Prebuilt wheels (e.g. tiktoken) leave no header room for Homebrew to rewrite their
+  # @rpath library IDs into absolute paths; Python loads them fine as they are.
+  preserve_rpath
+
   def install
     # A self-contained environment built from uv.lock on Homebrew's Python.
     ENV["UV_PYTHON_DOWNLOADS"] = "never"
