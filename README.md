@@ -10,7 +10,7 @@ $ shed rec
 Heard: “…”
 Recognized Harbor Lights from your earlier takes.
 ✓ Saved Harbor Lights/2026-09-21_18-30.mp3 (take 7 of 7)
-Rated 7.4/10 · pitch 7.2/10 (11¢ off) · timing 7.8/10 (tempo ±2.1%) · your best: 7.9
+Rated 7.5/10 · pitch 7.3/10 (21¢ off) · timing 7.8/10 (tempo ±2.1%) · your best: 7.9
 ```
 
 ## How it recognizes a song
@@ -103,26 +103,34 @@ its own (`shed add memo.m4a`) is always filed.
 ## How takes are rated
 
 Each take gets a rating out of 10 when it's filed. It's 60% pitch and 40% timing, and it
-runs locally in a few seconds. Takes filed before rating existed get rated the first time
-`progress` or `play --rating` needs them.
+runs locally in a few seconds. Takes filed before rating existed, or rated by an earlier version
+of the measurements, get rated the first time `progress` or `play --rating` needs them.
 
 | | What's measured | 10/10 at | 0/10 at |
 |---|---|---|---|
-| **Pitch** | How far your held notes are from the nearest true note, in cents (1/100 of a semitone), compared with your instrument's tuning. Singing along with an instrument tuned a bit sharp isn't penalized. | 5¢ | 25¢ (random notes) |
+| **Pitch** | How far your held notes typically are from the nearest note of the song's scale, in cents (1/100 of a semitone), compared with your instrument's tuning. Singing along with an instrument tuned a bit sharp isn't penalized. | 12¢ | 38¢ (random notes) |
 | **Timing** | How much your tempo wanders across the song, followed through the instrument's attacks (strums, piano chords). For sustained sounds with hardly any attacks (organ, pads, bowed strings), it follows when the chords change instead. | ±1% | ±6% |
 
 **How it works:** [RMVPE](https://arxiv.org/abs/2306.15412), a pitch model built for singing
 voices, reads your voice straight from the recording. Demucs separates the instrument to find
 its tuning and tempo.
+- Notes are measured against the scale your singing fits best (major, or its relative minor),
+  not against all 12 notes. Against all 12, a note more than 50¢ off would count as nearer the
+  next one, so random notes would read 25¢ and nothing could read worse. Against the scale's 7,
+  errors up to 100¢ show, and random notes land around 38¢.
+- The typical (median) note is what counts, so the odd misheard note, or one outside the scale,
+  counts for little.
+- The tempo is followed within ±13% of the song's own: searched wider, a steady beat gets misread
+  now and then as 3/4 or 4/3 of itself. Stretches where the beat isn't found are left out.
 
-**How accurate it is:** these results come from synthetic takes with known flaws, with
-guitar, piano and organ accompaniment.
-- Pitch read within 1.5¢ of the truth, and a singer 20¢ flat against the instrument dropped
-  to 6.0.
-- Rushing 12% over a song cost 3 points of timing on guitar or piano, and 6 on organ.
-- Sloppy strums (±40 ms) cost 6 points.
-- Following chord changes is a little less precise than following attacks, so a perfectly
-  steady organ scores about 9 on timing.
+**How accurate it is:**
+- Professional recordings (a studio recording and two acoustic covers) score 8.7 to 9.9. A
+  loose, stripped-back performance scores 5.4, on its timing.
+- On synthetic takes with known flaws, pitch reads within 2-3¢ of the truth, even with vibrato,
+  scoops into notes and falls off them. A singer 20¢ off on every note scores about 6.8 on pitch.
+- On a professional voice, RMVPE and an unrelated pitch tracker (YIN) agree within 1¢.
+- On synthetic takes, rushing 12% over a song costs about 5 points of timing, on guitar or organ
+  alike, and strums off by up to ±40 ms about 4.5. A perfectly steady player scores 10.
 
 **What it can't tell:**
 - stops and restarts
@@ -132,9 +140,9 @@ guitar, piano and organ accompaniment.
 - whether you sang the right melody (a wrong note sung in tune counts as in tune)
 - tone and expression
 
-The reference points are judgment calls, tuned on synthetic takes. Change them with
-`shed init` (or the `pitch_*` and `timing_*` keys in `config.toml`). Scores are recomputed
-from each take's saved measurements, so nothing gets re-analyzed.
+The reference points are judgment calls, set so that professional recordings score about 9. Change
+them with `shed init` (or the `pitch_*` and `timing_*` keys in `config.toml`). Scores are
+recomputed from each take's saved measurements, so nothing gets re-analyzed.
 
 ## The library is just folders
 

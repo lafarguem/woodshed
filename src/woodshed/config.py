@@ -15,6 +15,12 @@ PATH = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "woo
 DEFAULT_LIBRARY = "~/Music/Woodshed"
 
 
+# Earlier versions saved every setting, rating reference points included, so a saved default doesn't mean
+# it was chosen: a value that was the default then gives way to today's (as long as that stays consistent).
+_FORMER_DEFAULTS = {"pitch_best_cents": 5.0, "pitch_worst_cents": 25.0}
+_REFERENCES = ("pitch_best_cents", "pitch_worst_cents", "timing_best_percent", "timing_worst_percent")
+
+
 class Unreadable(SystemExit):
     """config.toml isn't valid TOML. Every command stops with this message, except `shed init`, which starts over."""
 
@@ -31,12 +37,15 @@ class Config:
     timing_worst_percent: float = 100 * rating.DEFAULTS.tempo_spread[1]
 
     def references(self) -> rating.References:
-        pitch = (float(self.pitch_best_cents), float(self.pitch_worst_cents))
-        timing = (float(self.timing_best_percent) / 100, float(self.timing_worst_percent) / 100)
-        if not (0 <= pitch[0] < pitch[1] and 0 <= timing[0] < timing[1]):
+        if not self.consistent():
             raise SystemExit(f"The rating reference points in {PATH} are inconsistent (each 10/10 value must be "
                              "below its 0/10 value). Run `shed init` to set them again.")
-        return rating.References(pitch, timing)
+        return rating.References((float(self.pitch_best_cents), float(self.pitch_worst_cents)),
+                                 (float(self.timing_best_percent) / 100, float(self.timing_worst_percent) / 100))
+
+    def consistent(self) -> bool:
+        return (0 <= float(self.pitch_best_cents) < float(self.pitch_worst_cents)
+                and 0 <= float(self.timing_best_percent) < float(self.timing_worst_percent))
 
 
 def exists() -> bool:
@@ -51,15 +60,20 @@ def load() -> Config:
     except tomllib.TOMLDecodeError as e:
         raise Unreadable(f"Can't read {PATH}: {e}. Fix it or run `shed init` again.") from None
     known = {f.name for f in fields(Config)}
-    return Config(**{key: value for key, value in data.items() if key in known})
+    saved = Config(**{key: value for key, value in data.items() if key in known})
+    today = Config(**{key: value for key, value in data.items() if key in known and _FORMER_DEFAULTS.get(key) != value})
+    return today if today.consistent() else saved
 
 
 def save(config: Config) -> None:
     PATH.parent.mkdir(parents=True, exist_ok=True)
     PATH.touch(mode=0o600, exist_ok=True)
     PATH.chmod(0o600)  # it holds your Genius token
-    values = {f.name: getattr(config, f.name) for f in fields(Config)}
+    defaults = Config()
+    # Reference points left at their defaults aren't saved, so that better defaults reach you.
+    values = {f.name: getattr(config, f.name) for f in fields(Config)
+              if not (f.name in _REFERENCES and getattr(config, f.name) == getattr(defaults, f.name))}
     # A JSON string is also a valid TOML string, as long as characters like 🎸 are written as they are:
-    # JSON would escape them as surrogate pairs (🎸), which TOML refuses.
+    # JSON would escape them as surrogate pairs (\ud83c\udfb8), which TOML refuses.
     PATH.write_text("".join(f"{key} = {json.dumps(value, ensure_ascii=False)}\n"
                             for key, value in values.items() if value is not None))

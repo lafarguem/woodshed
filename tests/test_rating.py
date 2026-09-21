@@ -38,6 +38,47 @@ def test_held_notes_ignore_vibrato_and_slides():
     assert notes == pytest.approx([0, 210, 395], abs=6)
 
 
+def test_notes_are_judged_against_the_songs_scale():
+    scale = np.array([0, 200, 400, 500, 700, 900, 1100]) - 900  # C major, in cents from A440
+    assert rating.off_scale(scale + 10, 0.0) == pytest.approx([10] * 7)  # a wrong scale can't tie with it
+    # 60¢ above C reads 60¢ off, where against all 12 notes it would read 40¢ from C♯.
+    assert rating.off_scale(np.r_[scale, scale[0] + 60], 0.0)[-1] == pytest.approx(60)
+    random_notes = np.random.default_rng(0).uniform(-2400, 0, 2000)
+    assert np.median(rating.off_scale(random_notes, 0.0)) > 35  # and 25 against all 12
+
+
+def test_a_takes_pitch_is_read_against_the_scale_it_fits(monkeypatch):
+    from woodshed import rmvpe
+
+    # Nine notes of C major in tune, then eleven 60¢ sharp of notes that have a whole tone above them.
+    in_tune = [-900, -700, -500, -400, -200, 0, 200, 300, 500]  # C4 to D5, in cents from A440
+    sharp = [note + 60 for note in [-900, -700, -400, -200, 0] * 2 + [-900]]
+    cents = np.concatenate([np.r_[np.full(50, c, float), np.full(10, np.nan)] for c in in_tune + sharp])  # 0.5 s each
+    f0 = np.where(np.isnan(cents), 0.0, 440 * 2 ** (np.nan_to_num(cents) / 1200))
+    monkeypatch.setattr(rmvpe, "pitch", lambda samples: (f0, np.where(np.isnan(cents), 0.0, 0.9)))
+    monkeypatch.setattr(rating, "_tuning", lambda accompaniment, rate: 0.0)
+    silence = np.zeros(16_000, np.float32)
+    # Against all 12 notes, the sharp ones would read 40¢ (from the note above them), and so would the take.
+    assert rating._pitch_cents(Stems(silence, silence, silence, 16_000)) == pytest.approx(60, abs=1)
+
+
+def test_timing_leaves_out_where_the_beat_isnt_found_and_the_odd_misreading(monkeypatch):
+    import librosa
+
+    sr, hop, bpm, window, seconds = 22050, 256, 100.0, 8.0, 120
+    fps = sr / hop
+    tempogram = np.zeros((int(window * fps), int(seconds * fps)))
+    for frame in range(tempogram.shape[1]):
+        kind = frame % 20
+        if kind < 12:  # most of the song: no beat near the tempo, only a slope towards either end of the range
+            tempogram[:, frame] = np.linspace(0, 1, len(tempogram))[:: 1 if kind % 2 else -1]
+        else:  # the beat, a little unsteady, and one window in eight misread 10% fast
+            tempo = bpm * (1.10 if kind == 19 else (0.99, 1.0, 1.01)[kind % 3])
+            tempogram[int(round(60 * fps / tempo)), frame] = 1
+    monkeypatch.setattr(librosa.feature, "tempogram", lambda **kwargs: tempogram)
+    assert rating._local_tempo_spread(np.zeros(tempogram.shape[1]), sr, hop, bpm, window, seconds) < 0.02
+
+
 needs_rmvpe = pytest.mark.skipif(bool(models.missing()), reason="models not downloaded (run `shed init`)")
 
 

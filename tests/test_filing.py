@@ -79,15 +79,15 @@ def text(result):
 
 def test_a_take_of_a_song_you_have_recorded_is_filed_with_it(shed, tone, rng):
     shed.library.add_take(tone, "Harbor Lights", 2, 7, datetime(2020, 6, 2, 20, 0),
-                          mishear(SONGS["Harbor Lights"], 0.3, rng), metrics=Metrics(15, 0.02))
+                          mishear(SONGS["Harbor Lights"], 0.3, rng), metrics=Metrics(25, 0.02))
     shed.heard = mishear(SONGS["Harbor Lights"], 0.3, rng, keep=0.6)
 
     result = shed("add", str(tone))
 
     assert result.exit_code == 0, result.output
     assert "Recognized Harbor Lights from your earlier takes" in text(result) and "(take 2 of 2)" in text(result)
-    # pitch 7.5 and timing 8.0 make 7.7, against 6.2 for the earlier take
-    assert "Rated 7.7/10" in text(result) and "your best take yet!" in text(result)
+    # pitch 10 and timing 8.0 make 9.2, against 6.2 for the earlier take
+    assert "Rated 9.2/10" in text(result) and "your best take yet!" in text(result)
     takes = shed.library.takes_of("Harbor Lights")
     assert len(takes) == 2 and shed.metrics in [t.metrics for t in takes]
 

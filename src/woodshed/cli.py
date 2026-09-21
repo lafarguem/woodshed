@@ -72,7 +72,7 @@ def init():
 
     console.print("\n[bold]4. How strict should ratings be?[/bold]")
     console.print(f"  Pitch:  10/10 at {settings.pitch_best_cents:g}¢ off or closer, 0/10 at {settings.pitch_worst_cents:g}¢ "
-                  "(100¢ = a semitone; notes picked at random average 25¢)")
+                  "(100¢ = a semitone; notes picked at random land around 38¢)")
     console.print(f"  Timing: 10/10 at ±{settings.timing_best_percent:g}% tempo wobble or steadier, "
                   f"0/10 at ±{settings.timing_worst_percent:g}%")
     console.print("[dim]Changing these re-scores all your takes instantly.[/dim]")
@@ -474,7 +474,7 @@ def _slide_references(settings: config.Config) -> None:
         return "  ·  ".join(f"{fmt.format(v)} → {rating.scores(measure(v), references)[key]:.1f}" for v in values)
 
     def pitch(best: float, worst: float) -> str:
-        return "A take " + examples([8, 12, 16, 20], "{:g}¢ off", rating.References(pitch_cents=(best, worst)), "pitch")
+        return "A take " + examples([15, 20, 25, 30], "{:g}¢ off", rating.References(pitch_cents=(best, worst)), "pitch")
 
     def timing(best: float, worst: float) -> str:
         return "A take " + examples([1.5, 2.5, 4, 5], "±{:g}%", rating.References(tempo_spread=(best / 100, worst / 100)),

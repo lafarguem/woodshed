@@ -5,7 +5,7 @@ import pytest
 import sounddevice as sd
 from typer.testing import CliRunner
 
-from woodshed import cli, config, genius, widgets
+from woodshed import cli, config, genius, rating, widgets
 
 DEVICES = [
     {"name": "Galaxy Buds2 Pro", "max_input_channels": 1},
@@ -144,8 +144,8 @@ def test_an_endless_timing_range_is_asked_again(setup, tmp_path):
 def test_arrow_keys_pick_the_microphone_and_slide_the_ratings(setup, tmp_path):
     keys = ["up", "enter",  # from the suggested MacBook mic up to the earbuds
             "down", "enter",  # "Adjust them"
-            "left", "left", "enter",  # pitch 10/10 within 5¢ -> 3¢
-            "enter",  # pitch 0/10 from 25¢, kept
+            "left", "left", "enter",  # pitch 10/10 within 12¢ -> 10¢
+            "enter",  # pitch 0/10 from 38¢, kept
             "right", "enter",  # timing 10/10 within ±1% -> ±1.5%
             "up", "enter"]  # timing 0/10 from ±6% -> ±8.5% (a big step)
     result = setup(str(tmp_path), tokens=[""], keys=keys)
@@ -153,5 +153,20 @@ def test_arrow_keys_pick_the_microphone_and_slide_the_ratings(setup, tmp_path):
     assert result.exit_code == 0, result.output
     saved = config.load()
     assert saved.device == "Galaxy Buds2 Pro"
-    assert (saved.pitch_best_cents, saved.pitch_worst_cents) == (3, 25)
+    assert (saved.pitch_best_cents, saved.pitch_worst_cents) == (10, 38)
     assert (saved.timing_best_percent, saved.timing_worst_percent) == (1.5, 8.5)
+
+
+def test_a_config_from_an_earlier_version_gets_todays_pitch_default():
+    config.PATH.parent.mkdir(parents=True)
+    config.PATH.write_text("pitch_best_cents = 5.0\npitch_worst_cents = 25.0\n"  # as earlier versions saved them all
+                           "timing_best_percent = 1.0\ntiming_worst_percent = 6.0\n")
+    assert config.load().references() == rating.DEFAULTS
+    config.PATH.write_text("pitch_best_cents = 5.0\npitch_worst_cents = 10.0\n")  # chosen, since today's would clash
+    assert config.load().references().pitch_cents == (5.0, 10.0)
+
+
+def test_settings_left_at_their_defaults_arent_saved():
+    config.save(config.Config(device="MacBook Pro Microphone", timing_worst_percent=8))
+    saved = config.PATH.read_text()
+    assert "pitch_" not in saved and "timing_best_percent" not in saved and "timing_worst_percent = 8" in saved
