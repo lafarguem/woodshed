@@ -5,6 +5,8 @@ so moving a file to another folder (e.g. in Finder) re-files it, and renaming a 
 renames the song.
 """
 
+import hashlib
+import json
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -24,6 +26,8 @@ _TRANSCRIPT = "woodshed:transcript"
 _GENIUS_ID = "woodshed:genius_id"
 _ARTIST = "woodshed:original_artist"
 _METRICS = "woodshed:metrics"
+_SOURCE = "woodshed:source"  # fingerprint of the file the take was made from, so it's never filed twice
+_SKIPPED = ".skipped.json"  # recordings found in folders and passed over, so they aren't checked again
 
 # Tuned on simulated transcripts (see tests/test_lyrics.py): the same song scores
 # 0.2-0.6 even with a third of the words misheard; different songs stay under 0.12.
@@ -39,6 +43,7 @@ class Take:
     transcript: str
     genius_id: int | None
     metrics: Metrics | None = None  # None until the take is rated
+    source: str | None = None  # see fingerprint()
 
 
 def folder_name(name: str) -> str:
@@ -64,7 +69,17 @@ def _read(path: Path, song: str) -> Take:
 
     genius_id = field(_GENIUS_ID)
     metrics = Metrics.from_json(field(_METRICS)) if field(_METRICS) else None
-    return Take(path, song, field(_TRANSCRIPT), int(genius_id) if genius_id.isdigit() else None, metrics)
+    return Take(path, song, field(_TRANSCRIPT), int(genius_id) if genius_id.isdigit() else None, metrics,
+                field(_SOURCE) or None)
+
+
+def fingerprint(path: Path) -> str:
+    """Tells a recording apart from any other, whatever it's called or wherever it's moved."""
+    digest = hashlib.sha256()
+    with path.open("rb") as f:
+        while chunk := f.read(1 << 20):
+            digest.update(chunk)
+    return digest.hexdigest()[:32]
 
 
 def is_confident(lines: list[str], ranked: list[tuple[str, float]]) -> bool:
@@ -101,6 +116,28 @@ class Library:
         """Raw recordings that couldn't be filed (e.g. filing crashed), oldest first."""
         return sorted((self.root / _INCOMING).glob("*.wav"))
 
+    def sources(self) -> dict[str, Path]:
+        """The fingerprint of the file each take was made from -> the take (for takes that kept one)."""
+        paths = [path for paths in self.songs().values() for path in paths] + self.unsorted()
+        return {take.source: take.path for take in (_read(path, "") for path in paths) if take.source}
+
+    def skipped(self) -> dict[str, str]:
+        """Fingerprints of recordings passed over in folders -> why (e.g. "no singing")."""
+        try:
+            return {source: entry["reason"] for source, entry in json.loads((self.root / _SKIPPED).read_text()).items()}
+        except (FileNotFoundError, ValueError, KeyError, TypeError, AttributeError):
+            return {}
+
+    def remember_skipped(self, source: str, path: Path, reason: str) -> None:
+        file = self.root / _SKIPPED
+        try:
+            entries = json.loads(file.read_text())
+        except (FileNotFoundError, ValueError):
+            entries = {}
+        entries[source] = {"reason": reason, "file": str(path)}
+        self.root.mkdir(parents=True, exist_ok=True)
+        file.write_text(json.dumps(entries, ensure_ascii=False, indent=1))
+
     def takes(self) -> list[Take]:
         return [_read(path, song) for song, paths in self.songs().items() for path in paths]
 
@@ -131,7 +168,7 @@ class Library:
 
     def add_take(self, src: Path, song: str | None, start: float, end: float, recorded: datetime,
                  lines: list[str], genius_id: int | None = None, artist: str | None = None,
-                 metrics: Metrics | None = None) -> Path:
+                 metrics: Metrics | None = None, source: str | None = None) -> Path:
         """Encode the playing part of `src` into the song's folder (or Unsorted) as <date>_<time>.mp3."""
         folder = self.root / (song or UNSORTED)
         folder.mkdir(parents=True, exist_ok=True)
@@ -153,5 +190,7 @@ class Library:
             tags.add(TXXX(encoding=3, desc=_ARTIST, text=artist))
         if metrics:
             tags.add(TXXX(encoding=3, desc=_METRICS, text=metrics.to_json()))
+        if source:
+            tags.add(TXXX(encoding=3, desc=_SOURCE, text=source))
         tags.save(dest)
         return dest

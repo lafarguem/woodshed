@@ -29,6 +29,10 @@ WEIGHTS = {"pitch": 0.6, "timing": 0.4}
 EDGE_SECONDS = 5.0  # count-ins and final ringing chords aren't judged for timing
 _SUSTAINED = 0.01  # below this share of percussive energy, follow chord changes instead of attacks
 _MIN_NOTES = 10
+# Held notes per minute of voice: 37-98 in 40 real sung takes (with guitar), 0-14 for speech (alone
+# or over a guitar); the threshold leaves both about the same margin.
+SINGING_NOTES_PER_VOICE_MINUTE = 22
+_MIN_VOICE_SECONDS = 5
 
 
 @dataclass(frozen=True)
@@ -112,6 +116,24 @@ def held_notes(cents: np.ndarray, voiced: np.ndarray, hop_seconds: float) -> np.
                 notes.append(float(np.median(raw[i:j])))
             i = j
     return np.array(notes)
+
+
+def sings(samples: np.ndarray) -> bool:
+    """Whether someone sings in these 16 kHz samples (the playing part of a recording), judged on its
+    middle three minutes. Singing holds its notes, speech glides from pitch to pitch: so it counts the
+    notes held 200 ms or more, per minute that a voice is heard (however long the instrument plays alone).
+    RMVPE reads the voice straight from the recording, in about a second per minute."""
+    from woodshed import rmvpe
+
+    rate = 16_000
+    middle = samples[max(0, len(samples) // 2 - 90 * rate): len(samples) // 2 + 90 * rate]
+    f0, confidence = rmvpe.pitch(middle)
+    voiced = confidence > 0.5
+    voice_minutes = voiced.sum() * rmvpe.HOP_SECONDS / 60
+    if voice_minutes < _MIN_VOICE_SECONDS / 60:  # an instrument alone, or hardly a word
+        return False
+    notes = held_notes(1200 * np.log2(np.maximum(f0, 1.0) / 440), voiced, rmvpe.HOP_SECONDS)
+    return len(notes) / voice_minutes >= SINGING_NOTES_PER_VOICE_MINUTE
 
 
 def _pitch_cents(stems: Stems) -> float | None:

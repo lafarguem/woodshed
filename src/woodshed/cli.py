@@ -3,6 +3,7 @@
 import os
 import shlex
 import sys
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -27,6 +28,7 @@ console = Console()
 
 LISTEN_SECONDS = 150  # how much of each take Whisper listens to
 MIN_TAKE_SECONDS = 20
+AUDIO_SUFFIXES = frozenset({".aac", ".aif", ".aifc", ".aiff", ".caf", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav"})
 GENIUS_CLIENTS_URL = "https://genius.com/api-clients"
 
 LibraryOpt = Annotated[Path | None, typer.Option("--library", "-l", envvar="WOODSHED_DIR", show_default=False,
@@ -129,29 +131,81 @@ def rec(
 
 @app.command()
 def add(
-    files: Annotated[list[Path], typer.Argument(exists=True, dir_okay=False, help="Audio files (any format).")],
+    paths: Annotated[list[Path], typer.Argument(exists=True, show_default=False,
+                                                help="Audio files (any format), or folders to pick the songs out of.")],
     library: LibraryOpt = None,
     language: LanguageOpt = None,
     isolate: IsolateOpt = True,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Only show which recordings would be filed.")] = False,
 ):
-    """File recordings you already have, e.g. voice memos. The originals are left untouched."""
+    """File recordings you already have, e.g. voice memos. Give it a folder and it picks out the songs.
+
+    The originals are left untouched, and a recording already filed is never filed twice.
+    """
     settings = _settings()
     songs = Library(library or Path(settings.library))
+    recordings = _recordings(paths, songs)
+    filed, passed_over = songs.sources(), songs.skipped()
     waiting = {p.resolve() for p in songs.waiting()}  # Woodshed's own raw copies, from a `shed rec` that failed
-    unreadable = 0
-    for path in files:
+    tally: Counter[str] = Counter()
+    unsure: list[tuple[Heard, str, list[genius.Candidate]]] = []  # from folders: asked about at the end
+
+    def filed_as(heard: Heard, choice: Choice, source: str) -> None:
+        filed[source] = _save(heard, choice, songs, source)
+        tally["filed"] += 1
+        if heard.src in waiting:  # filed at last: the raw copy has done its job
+            heard.src.unlink()
+
+    for path, recorded, from_folder in recordings:
+        source = lib.fingerprint(path)
+        if source in filed:
+            if not from_folder:
+                console.print(f"{escape(path.name)} is already filed, as "
+                              f"{escape(str(filed[source].relative_to(songs.root)))}.")
+            tally["already filed"] += 1
+            continue
+        if from_folder and source in passed_over:
+            tally[passed_over[source]] += 1
+            continue
         console.rule(escape(path.name))
         try:
-            saved = _file_take(path, audio.recorded_at(path), songs, language, isolate, settings.genius_token,
-                               from_mic=False)
+            if from_folder and (reason := _why_not_a_song(path)):
+                console.print(f"[dim]Skipped: {reason}.[/dim]")
+                if not dry_run:
+                    songs.remember_skipped(source, path, reason)
+                tally[reason] += 1
+                continue
+            if dry_run:
+                console.print("Would be filed." if not from_folder else "Has singing: would be filed.")
+                tally["filed"] += 1
+                continue
+            heard = _listen(path, recorded, language, isolate, from_mic=False)
+            if heard is None:
+                continue
+            choice, ranked, candidates = _recognize(heard.lines, songs, settings.genius_token)
+            if choice is None and from_folder:
+                console.print("[dim]Not sure which song this is: I'll ask at the end.[/dim]")
+                unsure.append((heard, source, candidates))
+                continue
+            filed_as(heard, choice or _ask(ranked, candidates[0] if candidates else None, songs), source)
         except audio.AudioError as e:  # not audio, or damaged: say so, and go on with the others
             reason = str(e).splitlines()[-1] if str(e) else "ffmpeg couldn't decode it"
             console.print(f"[red]Can't read {escape(path.name)}: {escape(reason)}[/red]")
-            unreadable += 1
+            tally["unreadable"] += 1
+
+    for i, (heard, source, candidates) in enumerate(unsure, 1):
+        console.rule(f"Unsure {i} of {len(unsure)}: {escape(heard.src.name)}")
+        # Your songs may have grown since it was heard, so it may be clear now; Genius isn't asked again.
+        choice, ranked, _ = _recognize(heard.lines, songs, settings.genius_token, candidates)
+        if choice is None and (choice := _ask(ranked, candidates[0] if candidates else None, songs, can_skip=True)) is None:
+            songs.remember_skipped(source, heard.src, "you skipped it")
+            tally["you skipped it"] += 1
             continue
-        if saved and path.resolve() in waiting:  # filed at last: the raw copy has done its job
-            path.unlink()
-    if unreadable:
+        filed_as(heard, choice, source)
+
+    if len(recordings) > 1 or any(path.is_dir() for path in paths):  # a folder's skips are only told here
+        _summarize(tally, dry_run)
+    if tally["unreadable"]:
         raise typer.Exit(1)
 
 
@@ -457,9 +511,76 @@ def _tilde(path: Path) -> str:
     return f"~/{path.relative_to(Path.home())}" if path.is_relative_to(Path.home()) else str(path)
 
 
-def _file_take(src: Path, recorded: datetime, songs: Library, language: str | None,
-               isolate_voice: bool, genius_token: str | None, from_mic: bool) -> Path | None:
-    """File one take. Returns where it was saved, or None if it wasn't kept (silent, or too short)."""
+def _recordings(paths: list[Path], songs: Library) -> list[tuple[Path, datetime, bool]]:
+    """What to add, oldest first so each take filed can help recognize the later ones: the files named, and
+    the audio files in the folders named (flagged True). Hidden files, like a recorder app's recently
+    deleted recordings, and your library itself are left out."""
+    found: dict[Path, bool] = {}
+    library = songs.root.resolve()
+    for path in paths:
+        if not path.is_dir():
+            found[path.resolve()] = False  # named: always filed, even if it's in a folder named too
+            continue
+        for file in sorted(path.rglob("*")):
+            if (file.suffix.lower() in AUDIO_SUFFIXES and file.is_file()
+                    and not any(part.startswith(".") for part in file.relative_to(path).parts)
+                    and not file.resolve().is_relative_to(library)):
+                found.setdefault(file.resolve(), True)
+    return sorted(((path, audio.recorded_at(path), from_folder) for path, from_folder in found.items()),
+                  key=lambda recording: recording[1])
+
+
+def _why_not_a_song(path: Path) -> str | None:
+    """Why a recording found in a folder isn't worth filing, or None if it is. It takes a few seconds and
+    comes first, so nothing that isn't a song gets transcribed, let alone looked up on Genius."""
+    with console.status("Checking for singing…"):
+        samples = audio.load(path)
+        start, end = audio.playing_bounds(samples)
+        if end <= start:
+            return "silent"
+        if end - start < MIN_TAKE_SECONDS:
+            return f"shorter than {MIN_TAKE_SECONDS} s"
+        if not rating.sings(samples[int(start * audio.SAMPLE_RATE): int(end * audio.SAMPLE_RATE)]):
+            return "no singing"
+    return None
+
+
+def _summarize(tally: Counter[str], dry_run: bool) -> None:
+    skipped = {reason: n for reason, n in tally.most_common() if reason not in ("filed", "unreadable")}
+    parts = [f"{'Would file' if dry_run else 'Filed'} {tally['filed']} take{'' if tally['filed'] == 1 else 's'}"]
+    if skipped:
+        parts.append(f"skipped {sum(skipped.values())}: " + ", ".join(f"{reason} ({n})" for reason, n in skipped.items()))
+    if tally["unreadable"]:
+        parts.append(f"couldn't read {tally['unreadable']}")
+    console.rule()
+    console.print(" · ".join(parts))
+
+
+@dataclass
+class Heard:
+    """A take that's been listened to (voice separated, lyrics transcribed, rated), not yet filed."""
+    src: Path
+    recorded: datetime
+    start: float
+    end: float
+    lines: list[str]
+    metrics: rating.Metrics | None
+
+
+def _file_take(src: Path, recorded: datetime, songs: Library, language: str | None, isolate_voice: bool,
+               genius_token: str | None, from_mic: bool) -> Path | None:
+    """File one take, asking which song it is when that isn't clear. Returns where it was saved, or None
+    if it wasn't kept (silent, or too short)."""
+    heard = _listen(src, recorded, language, isolate_voice, from_mic)
+    if heard is None:
+        return None
+    choice, ranked, candidates = _recognize(heard.lines, songs, genius_token)
+    return _save(heard, choice or _ask(ranked, candidates[0] if candidates else None, songs), songs)
+
+
+def _listen(src: Path, recorded: datetime, language: str | None, isolate_voice: bool,
+            from_mic: bool) -> Heard | None:
+    """Separate the voice, transcribe the lyrics and rate the take. None if it isn't worth keeping."""
     from woodshed import isolate, transcribe
 
     with console.status("Listening to the take…"):
@@ -489,21 +610,29 @@ def _file_take(src: Path, recorded: datetime, songs: Library, language: str | No
     if isolate_voice:
         with console.status("Rating the take…"):
             metrics = rating.analyze(stems)
+    return Heard(src, recorded, start, end, lines, metrics)
 
-    choice = _identify(lines, songs, genius_token)
+
+def _save(heard: Heard, choice: Choice, songs: Library, source: str | None = None) -> Path:
     earlier = [t for t in songs.takes_of(choice.song) if t.metrics] if choice.song else []
-    dest = songs.add_take(src, choice.song, start, end, recorded, lines, choice.genius_id, choice.artist, metrics)
+    dest = songs.add_take(heard.src, choice.song, heard.start, heard.end, heard.recorded, heard.lines,
+                          choice.genius_id, choice.artist, heard.metrics, source)
     number = ""
     if choice.song:  # counted by date, as `play` and `progress` do: an old voice memo can be take 1 of 4
         takes = sorted(dest.parent.glob("*.mp3"))
         number = f" (take {takes.index(dest) + 1} of {len(takes)})"
     console.print(f"[green]✓[/green] Saved [bold]{escape(str(dest.relative_to(songs.root)))}[/bold]{number}")
-    if metrics:
-        console.print(_rating_line(metrics, earlier, config.load().references()))
+    if heard.metrics:
+        console.print(_rating_line(heard.metrics, earlier, config.load().references()))
     return dest
 
 
-def _identify(lines: list[str], songs: Library, genius_token: str | None) -> Choice:
+def _recognize(lines: list[str], songs: Library, genius_token: str | None,
+               candidates: list[genius.Candidate] | None = None,
+               ) -> tuple[Choice | None, list[tuple[str, float]], list[genius.Candidate]]:
+    """The song, when your earlier takes or Genius make it clear. Never asks: with None comes what asking
+    needs, your songs ranked by shared lyrics and Genius's guesses. Genius is only searched when
+    `candidates` (from an earlier search) aren't given."""
     if lines:
         heard = " / ".join(lines)
         console.print(f"[dim]Heard: “{escape(heard[:90])}{'…' if len(heard) > 90 else ''}”[/dim]")
@@ -513,14 +642,15 @@ def _identify(lines: list[str], songs: Library, genius_token: str | None) -> Cho
     ranked = songs.match(lines)
     if lib.is_confident(lines, ranked):
         console.print(f"Recognized [bold]{escape(ranked[0][0])}[/bold] from your earlier takes.")
-        return Choice(ranked[0][0])
+        return Choice(ranked[0][0]), ranked, []
 
-    candidates = _search_genius(lines, genius_token)
+    if candidates is None:
+        candidates = _search_genius(lines, genius_token)
     if genius.is_confident(candidates):
         top = candidates[0]
         console.print(f"Recognized [bold]{escape(top.title)}[/bold] by {escape(top.artist)} on Genius.")
-        return _choice_for(top, songs)
-    return _ask(ranked, candidates[0] if candidates else None, songs)
+        return _choice_for(top, songs), ranked, candidates
+    return None, ranked, candidates
 
 
 def _search_genius(lines: list[str], token: str | None) -> list[genius.Candidate]:
@@ -544,7 +674,9 @@ def _choice_for(candidate: genius.Candidate, songs: Library) -> Choice:
     return Choice(song, candidate.genius_id, candidate.artist)
 
 
-def _ask(ranked: list[tuple[str, float]], suggestion: genius.Candidate | None, songs: Library) -> Choice:
+def _ask(ranked: list[tuple[str, float]], suggestion: genius.Candidate | None, songs: Library,
+         can_skip: bool = False) -> Choice | None:
+    """Which song this is, as you answer. None when `can_skip` and you skip it."""
     options: list[tuple[Choice, str]] = []
     if suggestion:
         options.append((_choice_for(suggestion, songs),
@@ -556,7 +688,10 @@ def _ask(ranked: list[tuple[str, float]], suggestion: genius.Candidate | None, s
     console.print("[bold]Which song is this?[/bold]")
     for i, (_, label) in enumerate(options, 1):
         console.print(f"  {i}. {label}")
-    answer = _input("Number, song name (Tab completes), or Enter for Unsorted: ", list(songs.songs()))
+    answer = _input("Number, song name (Tab completes), " + ("Enter for Unsorted, or - to skip it: " if can_skip
+                                                            else "or Enter for Unsorted: "), list(songs.songs()))
+    if can_skip and answer == "-":
+        return None
     if answer.isdigit() and 1 <= int(answer) <= len(options):
         return options[int(answer) - 1][0]
     name = songs.find_song(answer) or lib.folder_name(answer)

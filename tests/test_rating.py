@@ -2,7 +2,7 @@ import random
 
 import numpy as np
 import pytest
-from conftest import SR, held_chords, ring_out, strums, sung_notes
+from conftest import SR, held_chords, ring_out, spoken, strums, sung_notes
 
 from woodshed import models, rating
 from woodshed.isolate import Stems
@@ -72,6 +72,18 @@ def test_rushing_measures_worse_than_a_steady_tempo(measured):
 def test_no_singing_means_no_pitch_rating():
     silence = np.zeros(40 * SR, np.float32)
     assert rating.analyze(take(silence, strums(40, bpm=100))).pitch_cents is None
+
+
+@needs_rmvpe
+def test_singing_is_told_from_talking_and_from_an_instrument_alone():
+    import librosa
+
+    rng, guitar = random.Random(3), strums(40, bpm=100)
+    at_16k = lambda samples: librosa.resample(samples, orig_sr=SR, target_sr=16_000)
+    assert rating.sings(at_16k(sung_notes(40, 3, rng) + guitar))
+    assert not rating.sings(at_16k(spoken(40, rng) + guitar))
+    assert not rating.sings(at_16k(spoken(40, rng)))
+    assert not rating.sings(at_16k(guitar))
 
 
 def test_sustained_chords_are_timed_by_their_changes():

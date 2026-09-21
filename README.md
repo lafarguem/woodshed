@@ -9,7 +9,7 @@ $ shed rec
 ● REC 03:12  ██████████████░░░░░░░░░░░░░░░░  press any key to stop
 Heard: “…”
 Recognized Harbor Lights from your earlier takes.
-✓ Saved Harbor Lights/2026-09-21_18-30.mp3 (take #7)
+✓ Saved Harbor Lights/2026-09-21_18-30.mp3 (take 7 of 7)
 Rated 7.4/10 · pitch 7.2/10 (11¢ off) · timing 7.8/10 (tempo ±2.1%) · your best: 7.9
 ```
 
@@ -63,6 +63,7 @@ Answers go to `~/.config/woodshed/config.toml`, which only you can read. Run
 shed rec                    # record until you press a key
 shed rec --auto-stop 8      # …or until 8 s of silence
 shed add ~/Downloads/*.m4a  # file recordings you already have (voice memos: the date is kept)
+shed add ~/Downloads/Memos  # …or a whole folder: it picks out the songs (see below)
 shed songs                  # every song, with take counts and dates
 shed songs harbor           # the takes of one song
 shed play harbor            # its first take, then its latest (any key skips)
@@ -81,6 +82,23 @@ Flags and environment variables override what `shed init` saved:
 | Singing language (detected if unset) | `--language` | `WOODSHED_LANGUAGE` |
 | Genius token | | `GENIUS_ACCESS_TOKEN` |
 | Whisper model (run `shed init` after changing it) | | `WOODSHED_WHISPER_MODEL` |
+
+### Adding a backlog
+
+Give `shed add` a folder of old recordings, and it files the songs in it:
+
+1. **A quick check for singing** comes first, about a second per minute of recording. Recordings
+   without singing (talking, an instrument alone), and those shorter than 20 s, are skipped, before
+   anything is transcribed or sent to Genius. Hidden files, like a recorder app's recently deleted
+   recordings, are left out.
+2. **The songs are recognized as usual,** oldest first, so each take filed helps recognize the later
+   ones.
+3. **The ones it can't name are kept for the end,** one question each. Enter files a take in
+   `Unsorted/`, and `-` skips it.
+
+Run `shed add --dry-run <folder>` first to see what it would file and skip. Recordings already filed
+or skipped are remembered, so adding the folder again only looks at the new ones. A file named on
+its own (`shed add memo.m4a`) is always filed.
 
 ## How takes are rated
 

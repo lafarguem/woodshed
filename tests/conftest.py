@@ -82,6 +82,22 @@ def sung_notes(seconds: float, detune_cents: float, rng: random.Random) -> "np.n
     return sum(np.sin(k * phase) / k for k in range(1, 12)).astype(np.float32) * 0.2
 
 
+def spoken(seconds: float, rng: random.Random) -> "np.ndarray":
+    """Talking, roughly: voiced syllables of 120-250 ms whose pitch keeps gliding, in bursts with pauses."""
+    import numpy as np
+
+    out, t = np.zeros(int(seconds * SR), np.float32), 0.0
+    while t < seconds - 0.3:
+        n = int(rng.uniform(0.12, 0.25) * SR)
+        glide = np.linspace(0, rng.choice((-1, 1)) * rng.uniform(150, 400), n)  # intonation: never held
+        phase = 2 * np.pi * np.cumsum(440 * 2 ** ((rng.uniform(-900, -500) + glide) / 1200)) / SR
+        i = int(t * SR)
+        out[i:i + n] += (sum(np.sin(k * phase) / k for k in range(1, 12)) * np.sin(np.pi * np.arange(n) / n)).astype(
+            np.float32) * 0.2
+        t += n / SR + (rng.uniform(0.3, 0.8) if rng.random() < 0.2 else rng.uniform(0.0, 0.05))
+    return out
+
+
 def strums(seconds: float, bpm: float, speed_up: float = 0.0) -> "np.ndarray":
     """Plucked chords on every eighth note; speed_up is the tempo change from start to end."""
     import numpy as np
