@@ -39,7 +39,7 @@ def setup(tmp_path, monkeypatch):
 
 def test_init_saves_folder_microphone_and_a_working_token(setup, tmp_path):
     folder = tmp_path / "My Covers"
-    result = setup(str(folder), "", tokens=["bad-token", "good-token"])  # Enter accepts the suggested mic
+    result = setup(str(folder), "", "", tokens=["bad-token", "good-token"])  # Enter: suggested mic, default ratings
 
     assert result.exit_code == 0, result.output
     assert "Genius rejected that token" in result.output and "Token works" in result.output
@@ -50,17 +50,42 @@ def test_init_saves_folder_microphone_and_a_working_token(setup, tmp_path):
     assert stat.S_IMODE(config.PATH.stat().st_mode) == 0o600
 
 
-def test_running_init_again_keeps_previous_answers(setup, tmp_path):
-    setup(str(tmp_path / "lib"), "1", tokens=["good-token"])
-    result = setup("", "", tokens=[""])  # Enter everywhere
+def test_first_run_works_by_pressing_enter_at_every_question(setup, tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))  # so the default ~/Music/Woodshed lands in the test folder
+    result = setup("", "", "", tokens=[""])
 
     assert result.exit_code == 0, result.output
-    assert config.load() == config.Config(str(tmp_path / "lib"), "Galaxy Buds2 Pro", "good-token")
+    assert config.load() == config.Config(device="MacBook Pro Microphone")  # every other answer is the default
+    assert (tmp_path / "Music" / "Woodshed").is_dir()
+
+
+def test_running_init_again_keeps_previous_answers(setup, tmp_path):
+    setup(str(tmp_path / "lib"), "1", "y", "4", "30", "2", "8", tokens=["good-token"])
+    result = setup("", "", "", tokens=[""])  # Enter everywhere
+
+    assert result.exit_code == 0, result.output
+    assert config.load() == config.Config(str(tmp_path / "lib"), "Galaxy Buds2 Pro", "good-token", 4, 30, 2, 8)
 
 
 def test_token_is_optional(setup, tmp_path):
-    result = setup(str(tmp_path), "2", tokens=[""])
+    result = setup(str(tmp_path), "2", "", tokens=[""])
     assert result.exit_code == 0 and config.load().genius_token is None
+
+
+def test_rating_reference_points_can_be_changed(setup, tmp_path):
+    # An inconsistent pitch range (10/10 above 0/10) is asked again.
+    result = setup(str(tmp_path), "", "y", "20", "10", "3", "15", "", "", tokens=[""])
+    assert result.exit_code == 0, result.output
+    assert "must be below the 0/10 value, and at most 50" in result.output
+    references = config.load().references()
+    assert references.pitch_cents == (3, 15) and references.tempo_spread == (0.01, 0.06)  # timing kept
+
+
+def test_a_hand_edited_inconsistent_range_is_refused(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "PATH", tmp_path / "config.toml")
+    config.save(config.Config(pitch_best_cents=30, pitch_worst_cents=10))
+    with pytest.raises(SystemExit, match="inconsistent"):
+        config.load().references()
 
 
 def test_config_round_trips_awkward_values(tmp_path, monkeypatch):

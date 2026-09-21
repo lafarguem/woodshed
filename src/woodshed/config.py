@@ -9,6 +9,8 @@ import tomllib
 from dataclasses import dataclass, fields
 from pathlib import Path
 
+from woodshed import rating
+
 PATH = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "woodshed" / "config.toml"
 DEFAULT_LIBRARY = "~/Music/Woodshed"
 
@@ -18,6 +20,19 @@ class Config:
     library: str = DEFAULT_LIBRARY
     device: str | None = None  # input device name; None is the system default
     genius_token: str | None = None
+    # Rating reference points: the value that scores 10, and the one that scores 0.
+    pitch_best_cents: float = rating.DEFAULTS.pitch_cents[0]
+    pitch_worst_cents: float = rating.DEFAULTS.pitch_cents[1]
+    timing_best_percent: float = 100 * rating.DEFAULTS.tempo_spread[0]
+    timing_worst_percent: float = 100 * rating.DEFAULTS.tempo_spread[1]
+
+    def references(self) -> rating.References:
+        pitch = (float(self.pitch_best_cents), float(self.pitch_worst_cents))
+        timing = (float(self.timing_best_percent) / 100, float(self.timing_worst_percent) / 100)
+        if not (0 <= pitch[0] < pitch[1] and 0 <= timing[0] < timing[1]):
+            raise SystemExit(f"The rating reference points in {PATH} are inconsistent (each 10/10 value must be "
+                             "below its 0/10 value). Run `shed init` to set them again.")
+        return rating.References(pitch, timing)
 
 
 def exists() -> bool:

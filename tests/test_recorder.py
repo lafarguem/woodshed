@@ -17,12 +17,12 @@ class FakeStream:
         self.callback, self.running = callback, True
 
     def _feed(self):
-        block, t = RATE // 100, 0
+        block, t, start = RATE // 100, 0, time.monotonic()
         while self.running:
             level = 0.3 if t < RATE else 0.0
             self.callback(np.full((block, 1), level, np.float32), block, None, None)
             t += block
-            time.sleep(0.01)
+            time.sleep(max(0.0, start + t / RATE - time.monotonic()))  # real time, like a microphone
 
     def __enter__(self):
         threading.Thread(target=self._feed, daemon=True).start()

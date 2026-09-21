@@ -1,4 +1,3 @@
-import subprocess
 from datetime import datetime
 
 import numpy as np
@@ -7,17 +6,6 @@ from conftest import SONGS, mishear
 
 from woodshed import audio
 from woodshed.library import Library, is_confident
-
-
-@pytest.fixture
-def tone(tmp_path):
-    """Two seconds of silence, five of a guitar-ish tone, two of silence."""
-    path = tmp_path / "take.wav"
-    subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono:d=2",
-                    "-f", "lavfi", "-i", "sine=frequency=196:sample_rate=44100:duration=5",
-                    "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono:d=2",
-                    "-filter_complex", "[0][1][2]concat=n=3:v=0:a=1", str(path)], check=True)
-    return path
 
 
 def test_playing_bounds_trim_silence_but_ignore_clicks(tone):

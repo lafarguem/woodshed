@@ -1,5 +1,5 @@
 class Woodshed < Formula
-  desc "Records your covers and files each take under the song's name"
+  desc "Records your covers, files each take under its song, and rates it"
   homepage "https://github.com/lafarguem/woodshed"
   url "@URL@"
   sha256 "@SHA256@"
@@ -27,7 +27,7 @@ class Woodshed < Formula
   def caveats
     <<~EOS
       Run `shed init` to choose where recordings go and which microphone to use,
-      add an optional Genius token, and download the models (about 1.7 GB).
+      add an optional Genius token, and download the models (about 1.9 GB).
     EOS
   end
 

@@ -1,4 +1,5 @@
 import random
+import subprocess
 
 import pytest
 
@@ -42,3 +43,61 @@ def mishear(text: str, error: float, rng: random.Random, keep: float = 1.0) -> l
 @pytest.fixture
 def rng():
     return random.Random(7)
+
+
+@pytest.fixture
+def tone(tmp_path):
+    """Two seconds of silence, five of a guitar-ish tone, two of silence."""
+    path = tmp_path / "take.wav"
+    subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono:d=2",
+                    "-f", "lavfi", "-i", "sine=frequency=196:sample_rate=44100:duration=5",
+                    "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono:d=2",
+                    "-filter_complex", "[0][1][2]concat=n=3:v=0:a=1", str(path)], check=True)
+    return path
+
+
+SR = 44100
+
+
+def sung_notes(seconds: float, detune_cents: float, rng: random.Random) -> "np.ndarray":
+    """A voice-like tone holding 0.6 s notes of a major scale, each off by ±detune_cents, with vibrato."""
+    import numpy as np
+
+    t = np.arange(int(seconds * SR)) / SR
+    note = (t // 0.6).astype(int)
+    midi = 57 + np.array([0, 2, 4, 5, 7, 9, 11, 12])[note % 8]
+    off = np.array([rng.choice((-1, 1)) * detune_cents for _ in range(note.max() + 1)])[note]
+    cents = (midi - 69) * 100 + off + 25 * np.sin(2 * np.pi * 5.5 * t)
+    phase = 2 * np.pi * np.cumsum(440 * 2 ** (cents / 1200)) / SR
+    return sum(np.sin(k * phase) / k for k in range(1, 12)).astype(np.float32) * 0.2
+
+
+def strums(seconds: float, bpm: float, speed_up: float = 0.0) -> "np.ndarray":
+    """Plucked chords on every eighth note; speed_up is the tempo change from start to end."""
+    import numpy as np
+
+    out = np.zeros(int(seconds * SR) + SR, np.float32)
+    decay = np.arange(SR) / SR
+    pluck = sum(np.sin(2 * np.pi * f * decay) * np.exp(-6 * decay) for f in (110, 165, 220, 277)).astype(np.float32)
+    t = 0.2
+    while t < seconds:
+        i = int(t * SR)
+        out[i:i + SR] += pluck
+        t += 30 / (bpm * (1 + speed_up * t / seconds))
+    return out[: int(seconds * SR)] * 0.1
+
+
+def held_chords(seconds: float, bpm: float, speed_up: float = 0.0) -> "np.ndarray":
+    """An organ-like pad: a new chord each bar, fading in with no attack; speed_up as in strums()."""
+    import numpy as np
+
+    chords = [[57, 61, 64], [62, 66, 69], [52, 56, 59], [57, 60, 64]]
+    out, t, k = np.zeros(int(seconds * SR), np.float32), 0.0, 0
+    while t < seconds:
+        bar = 240 / (bpm * (1 + speed_up * t / seconds))
+        i, j = int(t * SR), min(int((t + bar) * SR), len(out))
+        tt = np.arange(j - i) / SR
+        fade = np.minimum(1, tt / 0.4) * np.minimum(1, (bar - tt) / 0.1)
+        out[i:j] += fade * sum(np.sin(2 * np.pi * 440 * 2 ** ((m - 69) / 12) * tt) for m in chords[k % 4])
+        t, k = t + bar, k + 1
+    return out * 0.05

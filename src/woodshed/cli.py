@@ -9,11 +9,11 @@ from typing import Annotated
 import typer
 from mutagen.mp3 import MP3
 from rich.console import Console
-from rich.prompt import Confirm, IntPrompt, Prompt
+from rich.prompt import Confirm, FloatPrompt, IntPrompt, Prompt
 from rich.table import Table
 
-from woodshed import audio, config, genius, library as lib, models
-from woodshed.library import Library
+from woodshed import audio, config, genius, library as lib, models, rating
+from woodshed.library import Library, Take
 
 # Recognition runs offline; `shed init` downloads the models it needs.
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
@@ -30,8 +30,8 @@ LibraryOpt = Annotated[Path | None, typer.Option("--library", "-l", envvar="WOOD
                                                  help="Folder holding your songs. [default: set by `shed init`]")]
 LanguageOpt = Annotated[str | None, typer.Option(envvar="WOODSHED_LANGUAGE",
                                                  help="Language you sing in (en, fr…). Detected if omitted.")]
-IsolateOpt = Annotated[bool, typer.Option(help="Separate your voice from the guitar before transcribing "
-                                               "(adds ~10 s; much more accurate when the guitar is loud).")]
+IsolateOpt = Annotated[bool, typer.Option(help="Separate your voice from the instrument: needed to rate the take, "
+                                               "and far better lyrics when the instrument is loud.")]
 
 
 @dataclass
@@ -61,11 +61,23 @@ def init():
                   f"{GENIUS_CLIENTS_URL}, then click “Generate Access Token”.")
     settings.genius_token = _ask_token(settings.genius_token)
 
+    console.print("\n[bold]4. How strict should ratings be?[/bold]")
+    console.print(f"  Pitch:  10/10 at {settings.pitch_best_cents:g}¢ off or closer, 0/10 at {settings.pitch_worst_cents:g}¢ "
+                  "(100¢ = a semitone; notes picked at random average 25¢)")
+    console.print(f"  Timing: 10/10 at ±{settings.timing_best_percent:g}% tempo wobble or steadier, "
+                  f"0/10 at ±{settings.timing_worst_percent:g}%")
+    console.print("[dim]Changing these re-scores all your takes instantly.[/dim]")
+    if Confirm.ask("Change them?", default=False):
+        settings.pitch_best_cents, settings.pitch_worst_cents = _ask_range(
+            "Pitch, in cents off the true note", settings.pitch_best_cents, settings.pitch_worst_cents, limit=50)
+        settings.timing_best_percent, settings.timing_worst_percent = _ask_range(
+            "Timing, in ± % tempo wobble", settings.timing_best_percent, settings.timing_worst_percent)
+
     config.save(settings)
     console.print(f"\n[green]✓[/green] Saved to {_tilde(config.PATH)}")
 
     if missing := models.missing():
-        console.print(f"Downloading {' and '.join(missing)} (about 1.7 GB, only once)…")
+        console.print(f"Downloading {', '.join(missing)} (about 1.9 GB, only once)…")
         models.download()
     console.print("[green]✓[/green] Ready. Run [bold]shed rec[/bold] and play.")
 
@@ -126,12 +138,7 @@ def list_songs(
     songs = Library(library or Path(config.load().library))
     catalog = songs.songs()
     if name:
-        partial = [s for s in catalog if name.casefold() in s.casefold()]
-        song = songs.find_song(name) or (partial[0] if len(partial) == 1 else None)
-        if song is None:
-            hint = f"; did you mean {' or '.join(partial)}?" if partial else f" in {songs.root}"
-            console.print(f"No song called “{name}”{hint}")
-            raise typer.Exit(1)
+        song = _find_song(songs, name)
         table = Table("#", "Recorded", "Length", title=song, title_justify="left")
         for i, path in enumerate(catalog[song], 1):
             table.add_row(str(i), _when(path), _length(path))
@@ -149,6 +156,91 @@ def list_songs(
 
 
 @app.command()
+def play(
+    name: Annotated[str, typer.Argument(help="The song; part of its name is enough.")],
+    metric: Annotated[str | None, typer.Argument(help="With --rating: pitch or timing instead of the overall rating.",
+                                                 show_default=False)] = None,
+    by_rating: Annotated[bool, typer.Option("--rating", help="Play your worst take, then your best.")] = False,
+    library: LibraryOpt = None,
+):
+    """Play a song's first take, then its latest, to hear how far you've come."""
+    from woodshed import player
+
+    if metric is not None and metric not in rating.METRICS:
+        console.print(f"“{metric}” isn't a rating; use {' or '.join(rating.METRICS)}. "
+                      'Quote song names with spaces: shed play "harbor lights"')
+        raise typer.Exit(1)
+    settings = config.load()
+    songs = Library(library or Path(settings.library))
+    song = _find_song(songs, name)
+    takes = songs.takes_of(song)
+    if not takes:
+        console.print(f"“{song}” has no takes yet.")
+        raise typer.Exit(1)
+
+    if by_rating or metric:
+        references = settings.references()
+        key = metric or "overall"
+        rated = [(rating.scores(t.metrics, references)[key], number, t) for number, t in enumerate(_rate(songs, takes), 1)
+                 if t.metrics and rating.scores(t.metrics, references)[key] is not None]
+        if not rated:
+            console.print(f"None of the takes of “{song}” could be rated on {key}.")
+            raise typer.Exit(1)
+        worst, best = min(rated, key=lambda r: r[:2]), max(rated, key=lambda r: r[:2])
+        picks = [("worst", worst), ("best", best)] if len(rated) > 1 else [("only rated", worst)]
+        picks = [(f"{which} take by {'rating' if key == 'overall' else key}", number, take,
+                  f", {_score_text(take.metrics, key, references)}") for which, (_, number, take) in picks]
+    else:
+        if len(takes) == 1:
+            console.print("[dim]Only one take so far.[/dim]")
+        picks = [("first take" if n == 1 else "latest take", n, takes[n - 1], "")
+                 for n in dict.fromkeys([1, len(takes)])]
+
+    for label, number, take, detail in picks:
+        console.print(f"[green]▶[/green] [bold]{song}[/bold], {label} ({number} of {len(takes)}), "
+                      f"recorded {_when(take.path)}{detail}")
+        if not player.play(take.path, console):
+            break
+
+
+@app.command()
+def progress(
+    name: Annotated[str, typer.Argument(help="The song; part of its name is enough.")],
+    library: LibraryOpt = None,
+):
+    """Rate every take of a song, from first to latest."""
+    settings = config.load()
+    references = settings.references()
+    songs = Library(library or Path(settings.library))
+    song = _find_song(songs, name)
+    takes = _rate(songs, songs.takes_of(song))
+    if not takes:
+        console.print(f"“{song}” has no takes yet.")
+        raise typer.Exit(1)
+
+    table = Table("#", "Recorded", "Rating", "Pitch", "Timing", title=song, title_justify="left")
+    for number, take in enumerate(takes, 1):
+        if take.metrics is None:
+            table.add_row(str(number), _when(take.path), "–", "–", "–")
+            continue
+        s = rating.scores(take.metrics, references)
+        pitch = "–" if s["pitch"] is None else f"{s['pitch']:.1f}  [dim]{take.metrics.pitch_cents:.0f}¢ off[/dim]"
+        timing = "–" if s["timing"] is None else f"{s['timing']:.1f}  [dim]±{100 * take.metrics.tempo_spread:.1f}%[/dim]"
+        overall = "–" if s["overall"] is None else f"[bold]{s['overall']:.1f}[/bold]"
+        table.add_row(str(number), _when(take.path), overall, pitch, timing)
+    console.print(table)
+
+    overall = [(n, rating.scores(t.metrics, references)["overall"]) for n, t in enumerate(takes, 1) if t.metrics]
+    overall = [(n, score) for n, score in overall if score is not None]
+    if len(overall) > 1:
+        best_number, best = max(overall, key=lambda o: (o[1], o[0]))
+        console.print(f"Rating {_sparkline([score for _, score in overall])} {overall[0][1]:.1f} → "
+                      f"{overall[-1][1]:.1f} since your first take; best {best:.1f} (take {best_number}).")
+    console.print("[dim]Pitch: how close your held notes are to true notes. Timing: how steady your tempo is. "
+                  "Scores are out of 10.[/dim]")
+
+
+@app.command()
 def devices():
     """List the microphones and audio interfaces you can record from."""
     import sounddevice as sd
@@ -161,13 +253,72 @@ def devices():
             console.print(f"{marker} {i}: {dev['name']} ({dev['max_input_channels']} ch)")
 
 
+def _find_song(songs: Library, name: str) -> str:
+    """The song called `name`, or the only one whose name contains it."""
+    partial = [song for song in songs.songs() if name.casefold() in song.casefold()]
+    song = songs.find_song(name) or (partial[0] if len(partial) == 1 else None)
+    if song is None:
+        hint = f"; did you mean {' or '.join(partial)}?" if partial else f" in {songs.root}"
+        console.print(f"No song called “{name}”{hint}")
+        raise typer.Exit(1)
+    return song
+
+
+def _rate(songs: Library, takes: list[Take]) -> list[Take]:
+    """The takes, after rating any that haven't been rated yet (saved, so only once)."""
+    from woodshed import isolate
+
+    unrated = [t for t in takes if t.metrics is None]
+    if unrated and (missing := models.missing()):
+        console.print(f"[yellow]{_not_downloaded(missing)} Run `shed init` to download.[/yellow]")
+        raise typer.Exit(1)
+    for i, take in enumerate(unrated, 1):
+        with console.status(f"Rating take {i} of {len(unrated)} (only needed once)…"):
+            take.metrics = rating.analyze(isolate.separate(take.path))
+        songs.save_metrics(take.path, take.metrics)
+    return takes
+
+
+def _score_text(metrics: rating.Metrics, key: str, references: rating.References) -> str:
+    score = rating.scores(metrics, references)[key]
+    if key == "pitch":
+        return f"pitch {score:.1f}/10 ({metrics.pitch_cents:.0f}¢ off)"
+    if key == "timing":
+        return f"timing {score:.1f}/10 (tempo ±{100 * metrics.tempo_spread:.1f}%)"
+    return f"rated {score:.1f}/10"
+
+
+def _rating_line(metrics: rating.Metrics, earlier: list[Take], references: rating.References) -> str:
+    s = rating.scores(metrics, references)
+    if s["overall"] is None:
+        return "[dim]Not enough singing or strumming to rate this take.[/dim]"
+    parts = [f"Rated [bold]{s['overall']:.1f}/10[/bold]"]
+    parts += [_score_text(metrics, key, references) for key in rating.METRICS if s[key] is not None]
+    if s["pitch"] is None:
+        parts.append("pitch: not enough singing to judge")
+    line = " · ".join(parts)
+    best = max((score for t in earlier if (score := rating.scores(t.metrics, references)["overall"]) is not None),
+               default=None)
+    if best is not None:
+        line += " · [green]your best take yet![/green]" if s["overall"] > best else f" · your best: {best:.1f}"
+    return line
+
+
+def _sparkline(values: list[float]) -> str:
+    return "".join("▁▂▃▄▅▆▇█"[min(7, int(v / 10 * 8))] for v in values)
+
+
+def _not_downloaded(names: list[str]) -> str:
+    return f"{', '.join(names)} {'is' if len(names) == 1 else 'are'}n't downloaded yet."
+
+
 def _settings() -> config.Config:
     """Saved settings, after checking setup is done (so a take is never recorded for nothing)."""
     if not config.exists():
         console.print("[yellow]Run `shed init` first to choose your folder and microphone.[/yellow]")
         raise typer.Exit(1)
     if missing := models.missing():
-        console.print(f"[yellow]{' and '.join(missing)} isn't downloaded yet. Run `shed init` again.[/yellow]")
+        console.print(f"[yellow]{_not_downloaded(missing)} Run `shed init` to download.[/yellow]")
         raise typer.Exit(1)
     settings = config.load()
     settings.genius_token = os.environ.get("GENIUS_ACCESS_TOKEN") or settings.genius_token
@@ -215,6 +366,18 @@ def _ask_token(current: str | None) -> str | None:
         return token
 
 
+def _ask_range(label: str, best: float, worst: float, limit: float | None = None) -> tuple[float, float]:
+    """Ask for the value scoring 10 and the one scoring 0 until they make sense."""
+    console.print(label)
+    while True:
+        new_best = FloatPrompt.ask(f"  Scores 10 at or below ({best:g})", default=float(best), show_default=False)
+        new_worst = FloatPrompt.ask(f"  Scores 0 at or above ({worst:g})", default=float(worst), show_default=False)
+        if 0 <= new_best < new_worst and (limit is None or new_worst <= limit):
+            return new_best, new_worst
+        console.print("[yellow]The 10/10 value must be below the 0/10 value" +
+                      (f", and at most {limit:g}." if limit else ".") + "[/yellow]")
+
+
 def _tilde(path: Path) -> str:
     path = path.expanduser().resolve()
     return f"~/{path.relative_to(Path.home())}" if path.is_relative_to(Path.home()) else str(path)
@@ -238,18 +401,26 @@ def _file_take(src: Path, recorded: datetime, songs: Library, language: str | No
             return
 
     seconds = min(LISTEN_SECONDS, end - start)
+    metrics = None
     if isolate_voice:
-        with console.status("Separating your voice from the guitar…"):
-            voice = isolate.vocals(src, start, seconds)
+        with console.status("Separating your voice from the instrument…"):
+            stems = isolate.separate(src, start, end - start)
+        voice = stems.vocals_16k(seconds)
     else:
         voice = samples[int(start * audio.SAMPLE_RATE): int((start + seconds) * audio.SAMPLE_RATE)]
     with console.status("Transcribing the lyrics…"):
         lines = transcribe.transcribe(voice, language)
+    if isolate_voice:
+        with console.status("Rating the take…"):
+            metrics = rating.analyze(stems)
 
     choice = _identify(lines, songs, genius_token)
-    dest = songs.add_take(src, choice.song, start, end, recorded, lines, choice.genius_id, choice.artist)
+    earlier = [t for t in songs.takes_of(choice.song) if t.metrics] if choice.song else []
+    dest = songs.add_take(src, choice.song, start, end, recorded, lines, choice.genius_id, choice.artist, metrics)
     number = f" (take #{len(list(dest.parent.glob('*.mp3')))})" if choice.song else ""
     console.print(f"[green]✓[/green] Saved [bold]{dest.relative_to(songs.root)}[/bold]{number}")
+    if metrics:
+        console.print(_rating_line(metrics, earlier, config.load().references()))
 
 
 def _identify(lines: list[str], songs: Library, genius_token: str | None) -> Choice:

@@ -9,7 +9,7 @@ from woodshed.lyrics import words
 
 MODEL = os.environ.get("WOODSHED_WHISPER_MODEL", "mlx-community/whisper-large-v3-turbo")
 
-# Whisper learned from subtitled videos, so over guitar-only passages it tends to "hear" these.
+# Whisper learned from subtitled videos, so over instrumental passages it tends to "hear" these.
 _PHANTOM_LINES = {
     "you", "bye", "thank you", "thanks for watching", "thank you for watching",
     "thank you so much for watching", "please subscribe", "music", "applause",

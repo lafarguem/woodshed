@@ -1,13 +1,7 @@
 """Microphone capture to a WAV file, with a live level meter."""
 
-import contextlib
-import os
 import queue
-import select
-import sys
-import termios
 import time
-import tty
 import wave
 from pathlib import Path
 
@@ -17,30 +11,10 @@ from rich.console import Console
 from rich.live import Live
 from rich.text import Text
 
+from woodshed.terminal import keypress
+
 _METER_WIDTH = 30
 _QUIET_DB = -45.0  # below this counts as silence for --auto-stop
-
-
-@contextlib.contextmanager
-def _keypress():
-    """Yield a function telling whether a key was pressed, without echoing it."""
-    if not sys.stdin.isatty():
-        yield lambda: False
-        return
-    fd = sys.stdin.fileno()
-    saved = termios.tcgetattr(fd)
-    tty.setcbreak(fd)  # Ctrl+C still works in cbreak mode
-
-    def pressed() -> bool:
-        if select.select([fd], [], [], 0)[0]:
-            os.read(fd, 1024)
-            return True
-        return False
-
-    try:
-        yield pressed
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, saved)
 
 
 def _meter(elapsed: float, db: float, auto_stop: float | None) -> Text:
@@ -78,7 +52,7 @@ def record(dest: Path, console: Console, device: int | str | None = None,
                                 dtype="float32", callback=on_audio)
         started = last_sound = time.monotonic()
         heard_anything = False
-        with stream, _keypress() as pressed, Live(console=console, transient=True, refresh_per_second=15) as live:
+        with stream, keypress() as pressed, Live(console=console, transient=True, refresh_per_second=15) as live:
             try:
                 while not pressed():
                     try:
