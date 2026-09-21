@@ -104,6 +104,10 @@ def test_config_round_trips_awkward_values(tmp_path, monkeypatch):
     assert "genius_token" not in config.PATH.read_text()
 
 
+def text(result):
+    return " ".join(result.output.split())  # undo the terminal's line wrapping
+
+
 @pytest.mark.parametrize("chosen", ["MacBook Pro Microphone", "2"])  # a name or a number, as with `rec --device`
 def test_devices_marks_the_microphone_rec_would_use(setup, monkeypatch, chosen):
     monkeypatch.setenv("WOODSHED_DEVICE", chosen)
@@ -126,14 +130,14 @@ def test_init_starts_over_from_an_unreadable_config(setup, tmp_path):
     result = setup(str(tmp_path / "lib"), "", "", tokens=[""])
 
     assert result.exit_code == 0, result.output
-    assert "starting from the defaults" in result.output
+    assert "starting from the defaults" in text(result)  # after the config's path, so wrapped wherever it ends
     assert config.load().library == str(tmp_path / "lib")
 
 
 def test_an_endless_timing_range_is_asked_again(setup, tmp_path):
     result = setup(str(tmp_path), "", "y", "", "", "1", "inf", "1", "8", tokens=[""])
     assert result.exit_code == 0, result.output
-    assert "at most 15" in result.output
+    assert "at most 15" in text(result)
     assert config.load().references().tempo_spread == (0.01, 0.08)
 
 
