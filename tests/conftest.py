@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from typer.testing import CliRunner
 
-from woodshed import cli, config, isolate, melody, rating, transcribe, youtube
+from woodshed import cli, config, genius, isolate, melody, rating, transcribe, youtube
 from woodshed.library import Library
 from woodshed.lyrics import words
 from woodshed.rating import Metrics
@@ -19,6 +19,15 @@ def own_settings(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "PATH", tmp_path / "settings" / "config.toml")
     for name in ("WOODSHED_DIR", "WOODSHED_DEVICE", "WOODSHED_LANGUAGE", "GENIUS_ACCESS_TOKEN"):
         monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def genius_pages(monkeypatch):
+    """Songs' pages on Genius, by id, so that looking a song up never goes online. A song that isn't there
+    isn't linked to any other (see test_genius.linked)."""
+    pages: dict[int, dict] = {}
+    monkeypatch.setattr(genius, "song", lambda genius_id, token: pages.get(genius_id, {}))
+    return pages
 
 # Invented lyrics, so tests don't depend on real songs.
 SONGS = {

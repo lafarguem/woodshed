@@ -516,27 +516,49 @@ def reference(
 
 
 def _pick_original(song: str, songs: Library) -> str | None:
-    """The link of the video you say is the song's original recording, among those YouTube finds for it."""
-    artist = next((t.artist for t in reversed(songs.takes_of(song)) if t.artist), None)
-    query = f"{artist} {song}" if artist else song
-    with console.status(f"Looking for “{escape(query)}” on YouTube…"):
-        videos = youtube.search(f"{query} official audio")
-    if not videos:
-        console.print(f"YouTube found nothing for “{escape(query)}”.")
-        return None
-    console.print("[bold]Which one is the original?[/bold] (a live or acoustic version has another melody)")
+    """The link of the video you say is the song's original recording, among those YouTube finds for it. When it
+    isn't there (the song's artist is wrong, or unknown), you can say who sings the original, and it looks again:
+    that artist is then kept for the song, once you pick one of the videos found."""
+    known = artist = next((t.artist for t in reversed(songs.takes_of(song)) if t.artist), None)
+    while True:
+        query = f"{artist} {song}" if artist else song
+        with console.status(f"Looking for “{escape(query)}” on YouTube…"):
+            videos = youtube.search(f"{query} official audio")
+        if videos:
+            console.print("[bold]Which one is the original?[/bold] (a live or acoustic version has another melody)")
+        else:
+            console.print(f"YouTube found nothing for “{escape(query)}”.")
+        answer = _pick_video(videos)
+        if isinstance(answer, youtube.Video):
+            if artist != known:
+                songs.save_artist(song, artist)
+                console.print(f"Saved {escape(artist)} as the artist of “{escape(song)}”.")
+            return answer.url
+        if not answer:
+            return None
+        artist = answer
+
+
+def _pick_video(videos: list[youtube.Video]) -> youtube.Video | str | None:
+    """The video you pick, or else the artist you'd look for instead (None: neither)."""
     about = [" · ".join(part for part in (video.channel, video.seconds and _clock(video.seconds), video.description)
                         if part) for video in videos]
     if _interactive():
-        chosen = widgets.pick(console, [video.title for video in videos] + ["None of these"],
-                              details=about + [""])
-        return videos[chosen].url if chosen < len(videos) else None
+        chosen = widgets.pick(console, [video.title for video in videos] + ["Search again with another artist…",
+                                                                            "None of these"], details=about + ["", ""])
+        if chosen < len(videos):
+            return videos[chosen]
+        return _input("Who sings the original? ", []) or None if chosen == len(videos) else None
     for i, (video, line) in enumerate(zip(videos, about), 1):
         console.print(f"  {i}. {escape(video.title)}")
         console.print(Text(f"     {line}", "dim", no_wrap=True, overflow="ellipsis"))
-    while answer := _input("Number to download, or Enter to cancel: ", []):
-        if answer.isdigit() and 1 <= int(answer) <= len(videos):
-            return videos[int(answer) - 1].url
+    prompt = ("Number to download, an artist to search for instead, or Enter to cancel: " if videos
+              else "Another artist to search for, or Enter to cancel: ")
+    while answer := _input(prompt, []):
+        if not (videos and answer.isdigit()):
+            return answer
+        if 1 <= int(answer) <= len(videos):
+            return videos[int(answer) - 1]
         console.print(f"Type a number from 1 to {len(videos)}.")
     return None
 

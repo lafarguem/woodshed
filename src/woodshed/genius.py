@@ -5,15 +5,17 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from woodshed.lyrics import words
 
 API = "https://api.genius.com/search"
+SONGS = "https://api.genius.com/songs"
 MAX_QUERIES = 5
 
 _VERSION_TAG = re.compile(
     r"\s*[(\[][^)\]]*\b(remaster\w*|live|version|edit|mix|acoustic|demo|mono|stereo)\b[^)\]]*[)\]]", re.I)
+_ORIGINAL = ("cover_of", "live_version_of")  # how Genius links a song's page to the song it's another version of
 
 
 class GeniusError(Exception):
@@ -35,18 +37,26 @@ class Candidate:
 
 def search(query: str, token: str) -> list[dict]:
     """Songs Genius returns for a query, best match first."""
-    url = f"{API}?{urllib.parse.urlencode({'q': query})}"
+    body = _get(f"{API}?{urllib.parse.urlencode({'q': query})}", token)
+    return [hit["result"] for hit in body["hits"] if hit["type"] == "song"]
+
+
+def song(genius_id: int, token: str) -> dict:
+    """A song's page on Genius, with how it's linked to other songs (the one it's a cover of, say)."""
+    return _get(f"{SONGS}/{genius_id}", token)["song"]
+
+
+def _get(url: str, token: str) -> dict:
     request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}", "User-Agent": "woodshed"})
     try:
         with urllib.request.urlopen(request, timeout=10) as response:
-            body = json.load(response)
+            return json.load(response)["response"]
     except urllib.error.HTTPError as e:
         if e.code == 401:
             raise InvalidToken("Genius rejected the access token; run `shed init` to change it") from None
         raise GeniusError(f"Genius search failed (HTTP {e.code})") from None
     except (urllib.error.URLError, TimeoutError) as e:
         raise GeniusError(f"Couldn't reach Genius ({getattr(e, 'reason', e)})") from None
-    return [hit["result"] for hit in body["response"]["hits"] if hit["type"] == "song"]
 
 
 def snippets(lines: list[str], limit: int = MAX_QUERIES) -> list[str]:
@@ -80,18 +90,35 @@ def _is_song(result: dict) -> bool:
 
 
 def identify(lines: list[str], token: str) -> list[Candidate]:
-    """Songs matching the transcribed lines, most likely first."""
+    """Songs matching the transcribed lines, most likely first. The first is by its original artist (see original())."""
     candidates: dict[str, Candidate] = {}
     for query in snippets(lines):
         hits = [r for r in search(query, token) if _is_song(r)][:3]
         for rank, result in enumerate(hits):
             title = clean_title(result["title"])
-            # Covers of a song share its title, so they vote together.
+            # Covers of a song share its title, so they vote together, under whichever came up first.
             c = candidates.setdefault(" ".join(words(title)),
                                       Candidate(title, result["primary_artist"]["name"].strip(), result["id"]))
             c.points += 3 - rank
             c.first_places += rank == 0
-    return sorted(candidates.values(), key=lambda c: (c.first_places, c.points), reverse=True)
+    ranked = sorted(candidates.values(), key=lambda c: (c.first_places, c.points), reverse=True)
+    if ranked:
+        try:
+            ranked[0] = original(ranked[0], token)
+        except GeniusError:
+            pass  # it's still the song you sang, if maybe as someone's cover of it
+    return ranked
+
+
+def original(candidate: Candidate, token: str) -> Candidate:
+    """The song `candidate` is a cover or a live version of, when Genius links it to one. Only one of the same
+    title, though: a cover in another language is sung to other words, so to Woodshed it's a song of its own."""
+    for link in song(candidate.genius_id, token).get("song_relationships") or []:
+        if link.get("relationship_type") in _ORIGINAL and len(originals := link.get("songs") or []) == 1:
+            if words(clean_title(originals[0]["title"])) == words(candidate.title):
+                return replace(candidate, artist=originals[0]["primary_artist"]["name"].strip(),
+                               genius_id=originals[0]["id"])
+    return candidate
 
 
 def is_confident(ranked: list[Candidate]) -> bool:
