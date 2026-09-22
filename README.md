@@ -186,6 +186,12 @@ its tuning and tempo.
   has a reference recording (see below)
 - tone and expression
 
+`shed progress` shows two figures for pitch: how far off your notes typically are, either way, which is
+what's rated, and where they typically sit, under or over (`--take` spells both out for one take). A take
+whose notes stray both ways and one sung flat throughout can be just as far off, but only the second
+leans. Against the scale, takes rated before Woodshed measured the second only have the first; against a
+reference melody, both are always there.
+
 The reference points are judgment calls, set so that professional recordings score about 9. Change
 them with `shed init` (or the `pitch_*` and `timing_*` keys in `config.toml`), along with pitch's
 share of the rating (`pitch_weight_percent`). Scores are recomputed from each take's saved

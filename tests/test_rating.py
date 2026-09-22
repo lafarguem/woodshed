@@ -29,8 +29,9 @@ def test_overall_uses_what_could_be_measured():
 
 
 def test_ratings_from_an_older_version_are_redone():
-    stored = Metrics(12.3, 0.02).to_json()
-    assert Metrics.from_json(stored) == Metrics(12.3, 0.02)
+    stored = Metrics(12.3, 0.02, -4.5).to_json()
+    assert Metrics.from_json(stored) == Metrics(12.3, 0.02, -4.5)
+    assert Metrics.from_json('{"pitch_cents": 12.3, "tempo_spread": 0.02, "version": 2}') == Metrics(12.3, 0.02)
     assert Metrics.from_json(stored.replace(f'"version": {rating.VERSION}', '"version": 0')) is None
     assert Metrics.from_json("not json") is None
 
@@ -54,15 +55,22 @@ def test_notes_are_judged_against_the_songs_scale():
     assert np.median(rating.off_scale(random_notes, 0.0)) > 35  # and 25 against all 12
 
 
+def sung(notes, tuning=0.0):
+    """A pitch track holding each note (cents from A440) for 0.5 s, with a short silence after each."""
+    cents = np.concatenate([np.r_[np.full(50, c, float), np.full(10, np.nan)] for c in notes])
+    f0 = np.where(np.isnan(cents), 0.0, 440 * 2 ** (np.nan_to_num(cents) / 1200))
+    return rating.Track(f0, np.where(np.isnan(cents), 0.0, 0.9), tuning=tuning, hop_seconds=0.01)
+
+
 def test_a_takes_pitch_is_read_against_the_scale_it_fits():
     # Nine notes of C major in tune, then eleven 60¢ sharp of notes that have a whole tone above them.
     in_tune = [-900, -700, -500, -400, -200, 0, 200, 300, 500]  # C4 to D5, in cents from A440
     sharp = [note + 60 for note in [-900, -700, -400, -200, 0] * 2 + [-900]]
-    cents = np.concatenate([np.r_[np.full(50, c, float), np.full(10, np.nan)] for c in in_tune + sharp])  # 0.5 s each
-    f0 = np.where(np.isnan(cents), 0.0, 440 * 2 ** (np.nan_to_num(cents) / 1200))
-    track = rating.Track(f0, np.where(np.isnan(cents), 0.0, 0.9), tuning=0.0, hop_seconds=0.01)
     # Against all 12 notes, the sharp ones would read 40¢ (from the note above them), and so would the take.
-    assert rating._pitch_cents(track) == pytest.approx(60, abs=1)
+    assert rating._pitch(sung(in_tune + sharp)) == (pytest.approx(60, abs=1), pytest.approx(60, abs=1))  # over
+    flat = [note - 60 for note in [-700, -500, -200, 0, 200] * 2 + [-700]]  # of notes with a whole tone below
+    assert rating._pitch(sung(in_tune + flat)) == (pytest.approx(60, abs=1), pytest.approx(-60, abs=1))  # under
+    assert rating._pitch(sung(in_tune + sharp, tuning=None))[1] is None  # a cappella: nothing to sit against
 
 
 def test_timing_leaves_out_where_the_beat_isnt_found_and_the_odd_misreading(monkeypatch):

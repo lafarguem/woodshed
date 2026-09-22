@@ -111,8 +111,26 @@ def test_one_take_in_detail(songs):
 
     assert result.exit_code == 0, result.output
     assert "Harbor Lights, take 3 of 3, recorded 2026-06-30 20:00" in text(result)
-    assert "Rated 6.8/10 · pitch 10.0/10 (10¢ off) · timing 2.0/10 (tempo ±5.0%)" in text(result)
+    assert "Rated 6.8/10 · pitch 10.0/10 · timing 2.0/10 (tempo ±5.0%)" in text(result)
+    assert ("Pitch, against the song's scale: 10¢ off, either way: that's what's rated (10/10 at 12¢, 0/10 at 38¢) "
+            "Where the notes sit, under or over, wasn't measured for this take.") in text(result)  # rated before
     assert "your best" not in text(result) and "Harbor Lights/2026-06-30_20-00.mp3" in text(result)
+
+
+def test_where_the_notes_sit_is_shown_too(songs):
+    import shutil
+
+    [first] = songs.songs()["Winter Town"]
+    second = first.with_name("2026-06-02_20-00.mp3")
+    shutil.copy(first, second)  # (ffmpeg can't run: Popen is faked)
+    songs.save_metrics(first, Metrics(20, 0.02))  # rated before where the notes sit was measured
+    songs.save_metrics(second, Metrics(20, 0.02, -8.4))
+    progress = CliRunner().invoke(cli.app, ["progress", "winter", "--library", str(songs.root)])
+    one = CliRunner().invoke(cli.app, ["progress", "winter", "--take", "2", "--library", str(songs.root)])
+
+    assert "6.9 20¢ off │" in text(progress) and "6.9 20¢ off · 8¢ under" in text(progress)
+    assert "“under” or “over” where they typically sit" in text(progress)
+    assert "8¢ under, typically: against your instrument's tuning" in text(one)
 
 
 def test_only_the_take_asked_for_is_rated(songs, monkeypatch):

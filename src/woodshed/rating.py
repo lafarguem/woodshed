@@ -68,6 +68,9 @@ DEFAULTS = References()
 class Metrics:
     pitch_cents: float | None  # None: not enough singing to judge
     tempo_spread: float | None  # None: not enough strumming to judge
+    # Where the held notes typically sit against the notes of the scale (the median), under them if negative.
+    # None when there's no instrument to go by (a cappella), or for a take rated before it was measured.
+    pitch_lean_cents: float | None = None
 
     def to_json(self) -> str:
         return json.dumps({**asdict(self), "version": VERSION})
@@ -81,7 +84,7 @@ class Metrics:
             return None
         if not isinstance(data, dict) or data.get("version") != VERSION:
             return None
-        return cls(data.get("pitch_cents"), data.get("tempo_spread"))
+        return cls(data.get("pitch_cents"), data.get("tempo_spread"), data.get("pitch_lean_cents"))
 
 
 def _linear(value: float, best: float, worst: float) -> float:
@@ -135,7 +138,8 @@ def pitch_track(stems: Stems) -> Track:
 
 
 def analyze(stems: Stems, track: Track | None = None) -> Metrics:
-    return Metrics(_pitch_cents(track or pitch_track(stems)), _tempo_spread(stems.accompaniment, stems.rate))
+    off, lean = _pitch(track or pitch_track(stems))
+    return Metrics(off, _tempo_spread(stems.accompaniment, stems.rate), lean)
 
 
 def held_notes(cents: np.ndarray, voiced: np.ndarray, hop_seconds: float) -> np.ndarray:
@@ -193,25 +197,37 @@ def sings(samples: np.ndarray) -> bool:
     return len(notes) / voice_minutes >= SINGING_NOTES_PER_VOICE_MINUTE
 
 
-def _pitch_cents(track: Track) -> float | None:
+def _pitch(track: Track) -> tuple[float | None, float | None]:
+    """How far the held notes typically are from the song's scale, either way; and where they typically sit
+    against it (under it if negative), when there's an instrument to go by. The medians: the odd misread (or
+    chromatic) note counts for little."""
     notes = held_notes(track.cents, track.voiced, track.hop_seconds)
     if len(notes) < _MIN_NOTES:
-        return None
-    tuning = track.tuning
-    if tuning is None:  # no instrument to compare against: judge how consistent the notes are
-        tuning = circular_mean(notes)
-    return float(np.median(off_scale(notes, tuning)))  # the odd misread (or chromatic) note counts for little
+        return None, None
+    if track.tuning is None:  # no instrument to compare against: judge how consistent the notes are
+        return float(np.median(off_scale(notes, circular_mean(notes)))), None  # centered on them: no lean to tell
+    offsets = scale_offsets(notes, track.tuning)
+    return float(np.median(np.abs(offsets))), float(np.median(offsets))
 
 
 def off_scale(notes: np.ndarray, tuning: float) -> np.ndarray:
-    """How far (¢) each note is from the nearest note of the song's scale: of the 12 major scales (each with
-    the notes of its relative minor), the one the notes fit best on average (by the median, a wrong scale
-    fitting half the notes can tie with the right one). Fitted to your singing rather than read from the
-    instrument, whose chords can suggest the wrong key."""
+    """How far (¢) each note is from the nearest note of the song's scale, either way (see scale_offsets())."""
+    return np.abs(scale_offsets(notes, tuning))
+
+
+def scale_offsets(notes: np.ndarray, tuning: float) -> np.ndarray:
+    """How far (¢) each note is from the nearest note of the song's scale, under it if negative: of the 12 major
+    scales (each with the notes of its relative minor), the one the notes fit best on average (by the median, a
+    wrong scale fitting half the notes can tie with the right one). Fitted to your singing rather than read from
+    the instrument, whose chords can suggest the wrong key."""
     semitones = (np.asarray(notes) - tuning) / 100
-    fits = [100 * np.min([np.abs((semitones - note + 6) % 12 - 6) for note in (root + _MAJOR_SCALE) % 12], axis=0)
-            for root in range(12)]
-    return min(fits, key=np.mean)
+    best = None
+    for root in range(12):
+        steps = np.array([(semitones - note + 6) % 12 - 6 for note in (root + _MAJOR_SCALE) % 12])
+        nearest = steps[np.argmin(np.abs(steps), axis=0), np.arange(len(semitones))]
+        if best is None or np.mean(np.abs(nearest)) < np.mean(np.abs(best)):
+            best = nearest
+    return 100 * best
 
 
 def circular_mean(cents: np.ndarray) -> float:

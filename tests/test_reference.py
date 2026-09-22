@@ -145,9 +145,9 @@ def test_progress_follows_the_melody_of_takes_filed_before(harbor):
 
     assert first.exit_code == 0, first.output
     assert len(harbor.transcribed) == 1
-    assert "10.0 0¢ off the melody" in text(first)
+    assert "10.0 0¢ off · centered" in text(first)  # one line of six sung flat: the median line isn't
     assert f"Take 1 against the melody: Furthest from the melody: 0:10 “{LINES[2]}” 100¢ under" in text(first)
-    assert "Pitch: how close your lines are to the reference melody" in text(first)
+    assert "Pitch: “off” is how far your lines typically are from the reference melody" in text(first)
     harbor("progress", "harbor")
     assert len(harbor.transcribed) == 1  # kept with the take, not redone
 
@@ -351,6 +351,8 @@ def test_any_take_is_shown_against_the_melody(harbor, tone):
     assert "One take in detail: shed progress 'Harbor Lights' --take N" in text(latest)
     assert first.exit_code == 0, first.output
     assert "Harbor Lights, take 1 of 2, recorded 2026-06-01 20:00" in text(first)
+    assert ("Pitch, against the melody (6 lines compared): 0¢ off, either way: that's what's rated (10/10 at 15¢, "
+            "0/10 at 100¢) centered, typically: 1 line sits under the melody, 0 over") in text(first)
     assert f"Furthest from the melody: 0:10 “{LINES[2]}” 100¢ under" in text(first)
 
 
