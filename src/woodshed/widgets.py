@@ -22,16 +22,21 @@ def _keys(scripted: Iterator[str] | None) -> Iterator[Callable[[], str]]:
 
 
 def pick(console: Console, options: list[str], default: int = 0, notes: list[str] | None = None,
-         keys: Iterator[str] | None = None) -> int:
-    """Let the user choose an option with ↑/↓ and Enter. Returns its index."""
+         keys: Iterator[str] | None = None, details: list[str] | None = None) -> int:
+    """Let the user choose an option with ↑/↓ and Enter. Returns its index. `notes` go next to the options,
+    `details` on a line of their own under each, cut to the terminal's width."""
     notes = notes or [""] * len(options)
+    details = details or [""] * len(options)
     width = max(map(len, options))
     index = default
 
     def render() -> Group:
-        rows = [Text.assemble(("  ❯ ", "bold cyan") if i == index else "    ",
-                              (option.ljust(width), "bold" if i == index else ""), ("  " + note, "dim"))
-                for i, (option, note) in enumerate(zip(options, notes))]
+        rows = []
+        for i, (option, note, detail) in enumerate(zip(options, notes, details)):
+            rows.append(Text.assemble(("  ❯ ", "bold cyan") if i == index else "    ",
+                                      (option.ljust(width), "bold" if i == index else ""), ("  " + note, "dim")))
+            if detail:
+                rows.append(Text("      " + detail, "dim", no_wrap=True, overflow="ellipsis"))
         return Group(*rows, Text("  ↑/↓ to move, Enter to choose", "dim"))
 
     with _keys(keys) as next_key, Live(render(), console=console, transient=True, auto_refresh=False) as live:

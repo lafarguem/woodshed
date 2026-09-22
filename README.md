@@ -231,8 +231,9 @@ against, and `shed reference harbor --remove` goes back to the scale.
 **Finding the original on YouTube.** If you've installed [yt-dlp](https://github.com/yt-dlp/yt-dlp)
 (`brew install yt-dlp`), `shed reference harbor` offers to look for the original when the song has none,
 and `--search` looks even when it has one. It searches for the artist (when Genius recognized the song)
-and the title, lists what it finds, and downloads only the video you pick: pick the studio version, since a
-live or acoustic one has another melody. You can also give it a link (`shed reference harbor
+and the title, lists what it finds (each video's channel, length and the start of its description), and
+downloads only the one you pick with the arrow keys: pick the studio version, since a live or acoustic one
+has another melody. You can also give it a link (`shed reference harbor
 https://www.youtube.com/watch?v=…`). The download is deleted as soon as its melody has been followed.
 yt-dlp isn't bundled with Woodshed because YouTube keeps changing, so it needs updating every few weeks
 (`brew upgrade yt-dlp`). Note that YouTube's terms don't allow downloading outside its own apps: whether to

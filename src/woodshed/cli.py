@@ -19,6 +19,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.prompt import Confirm, FloatPrompt, IntPrompt, Prompt
 from rich.table import Table
+from rich.text import Text
 
 from woodshed import audio, config, genius, library as lib, melody, microphones, models, rating, widgets, youtube
 from woodshed.library import Library, Take
@@ -489,9 +490,15 @@ def _pick_original(song: str, songs: Library) -> str | None:
         console.print(f"YouTube found nothing for “{escape(query)}”.")
         return None
     console.print("[bold]Which one is the original?[/bold] (a live or acoustic version has another melody)")
-    for i, video in enumerate(videos, 1):
-        length = f" · {_clock(video.seconds)}" if video.seconds else ""
-        console.print(f"  {i}. {escape(video.title)} [dim]· {escape(video.channel)}{length}[/dim]")
+    about = [" · ".join(part for part in (video.channel, video.seconds and _clock(video.seconds), video.description)
+                        if part) for video in videos]
+    if _interactive():
+        chosen = widgets.pick(console, [video.title for video in videos] + ["None of these"],
+                              details=about + [""])
+        return videos[chosen].url if chosen < len(videos) else None
+    for i, (video, line) in enumerate(zip(videos, about), 1):
+        console.print(f"  {i}. {escape(video.title)}")
+        console.print(Text(f"     {line}", "dim", no_wrap=True, overflow="ellipsis"))
     while answer := _input("Number to download, or Enter to cancel: ", []):
         if answer.isdigit() and 1 <= int(answer) <= len(videos):
             return videos[int(answer) - 1].url

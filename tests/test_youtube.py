@@ -16,7 +16,7 @@ with open({log!r}, "a") as log:
     log.write(json.dumps(args) + "\\n")
 if any(a.startswith("ytsearch") for a in args):
     print(json.dumps({{"url": "https://www.youtube.com/watch?v=a1", "title": "Harbor Lights (Official Audio)",
-                      "channel": "The Originals", "duration": 201}}))
+                      "channel": "The Originals", "duration": 201, "description": "From the album\\n Salt and\\u00a0..."}}))
     print("[youtube:search] not a video")
     print(json.dumps({{"url": "https://www.youtube.com/watch?v=b2", "title": "Harbor Lights (Live)", "uploader": "A Fan",
                       "duration": None}}))
@@ -45,7 +45,8 @@ def yt_dlp(tmp_path, monkeypatch):
 def test_videos_are_found_through_yt_dlp(yt_dlp):
     assert youtube.available()
     assert youtube.search("harbor lights official audio") == [
-        Video("https://www.youtube.com/watch?v=a1", "Harbor Lights (Official Audio)", "The Originals", 201),
+        Video("https://www.youtube.com/watch?v=a1", "Harbor Lights (Official Audio)", "The Originals", 201,
+              "From the album Salt and ..."),  # on one line
         Video("https://www.youtube.com/watch?v=b2", "Harbor Lights (Live)", "A Fan", None)]
     assert yt_dlp()[-1][-1] == "ytsearch5:harbor lights official audio"
 

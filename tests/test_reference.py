@@ -1,6 +1,7 @@
 """Rating a song against a reference melody: `shed reference`, and what filing, `progress` and `play` then
 say. The models are faked (see `shed` in conftest.py), and the melodies made up note by note (test_melody.py)."""
 
+import contextlib
 import json
 import shutil
 from datetime import datetime
@@ -9,7 +10,7 @@ import pytest
 from conftest import SONGS, add_take, mishear, recording
 from test_melody import LINES, sing
 
-from woodshed import player, youtube
+from woodshed import cli, player, widgets, youtube
 from woodshed.lyrics import words
 from woodshed.rating import Metrics
 
@@ -186,7 +187,8 @@ def test_a_reference_analyzed_by_an_older_version_is_set_again(harbor):
 def online(harbor, tone, monkeypatch):
     """YouTube, through a yt-dlp that finds two videos: `searched` and `downloaded` are what it was asked."""
     harbor.searched, harbor.downloaded = [], []
-    videos = [youtube.Video("https://www.youtube.com/watch?v=a1", "Harbor Lights (Official Audio)", "The Originals", 201),
+    videos = [youtube.Video("https://www.youtube.com/watch?v=a1", "Harbor Lights (Official Audio)", "The Originals", 201,
+                            "From the album Salt and Rain ..."),
               youtube.Video("https://www.youtube.com/watch?v=b2", "Harbor Lights (Live in Lisbon)", "A Fan", 355)]
 
     def download(url, folder):
@@ -207,7 +209,8 @@ def test_the_original_is_found_on_youtube_for_a_song_without_a_reference(online)
     assert result.exit_code == 0, result.output
     assert "has no reference recording, so it's rated against its scale. Look for the original on YouTube?" \
         in text(result)
-    assert "1. Harbor Lights (Official Audio) · The Originals · 3:21 2. Harbor Lights (Live in Lisbon)" in text(result)
+    assert ("1. Harbor Lights (Official Audio) The Originals · 3:21 · From the album Salt and Rain ... "
+            "2. Harbor Lights (Live in Lisbon) A Fan · 5:55") in text(result)
     assert online.searched == ["Harbor Lights official audio"]
     [(url, folder)] = online.downloaded
     assert url == "https://www.youtube.com/watch?v=a1" and not folder.exists()  # the recording isn't kept
@@ -265,3 +268,17 @@ def test_a_new_songs_first_take_says_how_to_rate_it_on_the_melody(shed, tone, tm
 
     assert "To rate your pitch against the original's melody: shed reference 'Gravel Road'" in text(first)
     assert "shed reference" not in text(second)
+
+
+@pytest.mark.parametrize("keys, downloaded", [(["down", "enter"], ["https://www.youtube.com/watch?v=b2"]),
+                                              (["up", "enter"], [])])  # up from the first: "None of these"
+def test_the_original_is_picked_with_the_arrow_keys(online, monkeypatch, keys, downloaded):
+    presses = iter(keys)
+    monkeypatch.setattr(cli, "_interactive", lambda: True)
+    monkeypatch.setattr(widgets.terminal, "keys", lambda: contextlib.nullcontext(lambda: next(presses)))
+
+    result = online("reference", "harbor", "--search")
+
+    assert result.exit_code == 0, result.output
+    assert [url for url, _ in online.downloaded] == downloaded
+    assert online.library.has_reference("Harbor Lights") == bool(downloaded)

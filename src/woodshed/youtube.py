@@ -22,6 +22,7 @@ class Video:
     title: str
     channel: str
     seconds: float | None  # None when YouTube doesn't say (a live stream, say)
+    description: str = ""  # its start, as YouTube's search results show it
 
 
 def available() -> bool:
@@ -49,7 +50,7 @@ def search(query: str, results: int = 5) -> list[Video]:
             continue
         if url := entry.get("webpage_url") or entry.get("url"):
             videos.append(Video(url, entry.get("title") or url, entry.get("channel") or entry.get("uploader") or "",
-                                entry.get("duration")))
+                                entry.get("duration"), " ".join((entry.get("description") or "").split())))
     return videos
 
 
