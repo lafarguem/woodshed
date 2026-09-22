@@ -1,18 +1,20 @@
 # Pushing a vX.Y.Z tag runs the tests, then creates a GitHub release and publishes
-# Formula/woodshed.rb to lafarguem/homebrew-tap.
+# Formula/woodshed.rb to lafarguem/homebrew-tap. `gh workflow run release.yml` runs only the tests.
 name: release
 
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
   test:
-    # On an Apple Silicon Mac with Homebrew's Python, like the installed formula. The tests that need
-    # the downloaded models skip themselves.
+    # On an Apple Silicon Mac with Homebrew's Python, like the installed formula. Of the models, only the
+    # pitch one (181 MB) is downloaded, for the tests that rate synthetic takes; those that need the others
+    # (1.7 GB) skip themselves.
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v6
@@ -20,16 +22,24 @@ jobs:
       - name: Install ffmpeg, uv, and the Python the formula uses
         run: brew install ffmpeg uv python@3.14
 
+      - name: Keep the pitch model from one run to the next
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface/hub/models--lj1995--VoiceConversionWebUI
+          key: rmvpe
+
       - name: Run the tests
         env:
           UV_PYTHON_DOWNLOADS: never
         run: |
           export UV_PYTHON="$(brew --prefix python@3.14)/bin/python3.14"
           uv sync --frozen
+          uv run --frozen python -c "from huggingface_hub import hf_hub_download; from woodshed import rmvpe; hf_hub_download(rmvpe.HF_REPO, rmvpe.WEIGHTS)"
           uv run --frozen pytest
 
   release:
     needs: test
+    if: startsWith(github.ref, 'refs/tags/v')  # not when only the tests are run
     runs-on: ubuntu-latest
     permissions:
       contents: write

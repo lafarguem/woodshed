@@ -82,7 +82,7 @@ def test_timing_leaves_out_where_the_beat_isnt_found_and_the_odd_misreading(monk
     assert rating._local_tempo_spread(np.zeros(tempogram.shape[1]), sr, hop, bpm, window, seconds) < 0.02
 
 
-needs_rmvpe = pytest.mark.skipif(bool(models.missing()), reason="models not downloaded (run `shed init`)")
+needs_rmvpe = pytest.mark.skipif(models.RMVPE in models.missing(), reason="the pitch model isn't downloaded")
 
 
 def take(voice, guitar):

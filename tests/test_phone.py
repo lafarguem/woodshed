@@ -111,6 +111,12 @@ def test_a_take_that_isnt_worth_keeping_is_refused(server, tmp_path, sent, statu
     assert list(server.songs.incoming.iterdir()) == [] and server.received == []
 
 
+def test_starting_doesnt_look_up_the_macs_name(tmp_path, monkeypatch):
+    monkeypatch.setattr(phone.socket, "getfqdn", lambda *args: pytest.fail("looked this Mac's name up"))
+    cert, key, secret = phone.credentials(tmp_path / "phone")
+    phone.Server(Library(tmp_path / "lib"), secret, cert, key, 0, lambda *take: None).server_close()
+
+
 def test_nobody_else_can_send_takes(server, tmp_path):
     status, answer = upload(server, recorded(tmp_path, "sine=frequency=196", 5), key="guess")
     assert status == 403 and server.songs.waiting() == []

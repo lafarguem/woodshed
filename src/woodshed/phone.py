@@ -13,6 +13,7 @@ import json
 import re
 import secrets
 import socket
+import socketserver
 import ssl
 import subprocess
 import threading
@@ -166,6 +167,12 @@ class Server(ThreadingHTTPServer):
         self.songs, self.secret, self.received, self.max_bytes = songs, secret, received, max_bytes
         self.session, self.filing = session or Session(), filing  # filing: they're filed here as they come
         self._naming = threading.Lock()
+
+    def server_bind(self) -> None:
+        # HTTPServer's own also looks this Mac's name up on the network (socket.getfqdn), which nothing here needs,
+        # and which can take half a minute on a network where such lookups time out.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
 
     def handle_error(self, request, client_address) -> None:
         pass  # a phone that went away, or refused the certificate: nothing to do about it here
