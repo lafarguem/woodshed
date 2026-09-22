@@ -26,6 +26,7 @@ from woodshed.rating import Metrics
 UNSORTED = "Unsorted"
 FORMATS = ("mp3", "m4a")  # how takes are saved: mp3, or Apple Lossless (bigger, but exactly as recorded)
 _INCOMING = ".incoming"
+RAW_STAMP = "%Y-%m-%d_%H-%M-%S"  # how raw recordings waiting in .incoming/ are named: when they started
 _STAMP = "%Y-%m-%d_%H-%M"
 _TRANSCRIPT = "woodshed:transcript"
 _GENIUS_ID = "woodshed:genius_id"
@@ -176,6 +177,15 @@ class Library:
 
     def unsorted(self) -> list[Path]:
         return _takes_in(self.root / UNSORTED)
+
+    def raw_path(self, started: datetime, chosen: str = "") -> Path:
+        """A name for a new raw recording, among those waiting to be filed. `chosen` is the format it's to be saved
+        in (".m4a"), if not the usual one. Until it's finished, it goes by the same name with the suffix
+        .recording, so that it isn't taken for one waiting to be filed."""
+        raw, n = self.incoming / f"{started:{RAW_STAMP}}{chosen}.wav", 2
+        while raw.exists() or raw.with_suffix(".recording").exists():
+            raw, n = self.incoming / f"{started:{RAW_STAMP}}_{n}{chosen}.wav", n + 1
+        return raw
 
     def waiting(self) -> list[Path]:
         """Raw recordings that couldn't be filed (e.g. filing crashed), oldest first."""

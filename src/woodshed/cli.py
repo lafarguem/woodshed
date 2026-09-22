@@ -1,10 +1,12 @@
 """shed: record a cover, and Woodshed files it under the song's name."""
 
 import os
+import queue
 import re
 import shlex
 import sys
 import tempfile
+import threading
 from collections import Counter
 from contextlib import nullcontext
 from dataclasses import dataclass
@@ -21,7 +23,7 @@ from rich.prompt import Confirm, FloatPrompt, IntPrompt, Prompt
 from rich.table import Table
 from rich.text import Text
 
-from woodshed import audio, config, genius, library as lib, melody, microphones, models, rating, widgets, youtube
+from woodshed import audio, config, genius, library as lib, melody, microphones, models, phone, rating, widgets, youtube
 from woodshed.library import Library, Take
 
 # Recognition runs offline; `shed init` downloads the models it needs.
@@ -32,7 +34,6 @@ app = typer.Typer(help="Record your covers; Woodshed recognizes the song and fil
 console = Console()
 
 MIN_TAKE_SECONDS = 20
-RAW_STAMP = "%Y-%m-%d_%H-%M-%S"  # how raw recordings waiting in the library's .incoming/ are named
 MIN_REFERENCE_WORDS = 20  # fewer words heard in a reference recording, and there's no melody to follow
 AUDIO_SUFFIXES = frozenset({".aac", ".aif", ".aifc", ".aiff", ".caf", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav"})
 GENIUS_CLIENTS_URL = "https://genius.com/api-clients"
@@ -130,10 +131,7 @@ def rec(
     songs = Library(library or Path(settings.library), take_format)
     device = device or settings.device
     started = datetime.now()
-    chosen = "" if lossless is None else f".{take_format}"  # in its name, for whenever it gets filed
-    raw, n = songs.incoming / f"{started:{RAW_STAMP}}{chosen}.wav", 2
-    while raw.exists():
-        raw, n = songs.incoming / f"{started:{RAW_STAMP}}_{n}{chosen}.wav", n + 1
+    raw = songs.raw_path(started, "" if lossless is None else f".{take_format}")  # the format, for whenever it's filed
     recording = raw.with_suffix(".recording")  # not waiting to be filed until it's finished
     try:
         record(recording, console, int(device) if device and device.isdigit() else device, channels, auto_stop)
@@ -190,7 +188,7 @@ def add(
     listened: list[Heard] = []  # encoded for filing: see _listen()
 
     def filed_as(heard: Heard, choice: Choice, source: str) -> None:
-        filed[source] = _save(heard, choice, songs, source)
+        filed[source] = _save(heard, choice, songs, source).path
         tally["filed"] += 1
         if heard.src in waiting:  # filed at last: the raw copy has done its job
             heard.src.unlink()
@@ -422,8 +420,7 @@ def _show_take(songs: Library, song: str, number: int, references: rating.Refere
     if rated.comparison:
         _melody_feedback(rated.comparison)
     elif reference:
-        console.print("[dim]Too few lines of this take matched the reference, so its pitch is rated against the "
-                      "scale.[/dim]")
+        console.print(f"[dim]{ON_THE_SCALE}[/dim]")
     console.print(f"[dim]{escape(str(take.path))}[/dim]")
 
 
@@ -595,6 +592,171 @@ def _reference_for(lines: list[str], named: str | None, songs: Library) -> str |
 
 
 @app.command()
+def serve(
+    port: Annotated[int, typer.Option(help="The port the page is on.")] = phone.PORT,
+    later: Annotated[bool, typer.Option("--later", help="Only receive the takes: they wait to be filed by `shed add`, "
+                                                        "as with `shed rec --later`.")] = False,
+    library: LibraryOpt = None,
+    language: LanguageOpt = None,
+):
+    """Record from your phone: open the page this puts up on your Wi-Fi. Each take you record there is sent here and
+    filed, and the page shows how it rated (and asks which song it is, when that isn't clear)."""
+    settings = _settings()
+    songs = Library(library or Path(settings.library), settings.take_format)
+    for stuck in songs.incoming.glob("*.wav.filing"):  # a `shed serve` stopped while filing it: waiting again
+        stuck.rename(stuck.with_suffix(""))
+    cert, key, secret = phone.credentials(config.PATH.parent / "phone")
+    links = [f"https://{address}:{port}/?key={secret}" for address in phone.addresses()]
+    session = phone.Session()
+    filer = None if later else _PhoneFiler(songs, settings, session, language)
+
+    def received(raw: Path, seconds: float, waiting: int) -> None:
+        if filer:
+            console.print(f"[green]✓[/green] {datetime.now():%H:%M} A take from your phone ({_clock(seconds)})")
+            filer.takes.put(raw)
+        else:
+            console.print(f"[green]✓[/green] {datetime.now():%H:%M} A take from your phone ({_clock(seconds)}): "
+                          f"{waiting} waiting to be filed")
+
+    try:
+        server = phone.Server(songs, secret, cert, key, port, received, session, filing=filer is not None)
+    except OSError as e:
+        console.print(f"[red]Can't use port {port}: {escape(e.strerror or str(e))}.[/red] "
+                      f"Try another: shed serve --port {port + 1}")
+        raise typer.Exit(1)
+    console.print("[bold]On your phone, open this page[/bold] (on the same Wi-Fi as this Mac):")
+    console.print(_qr(links[0]))
+    console.print(links[0], soft_wrap=True)
+    if len(links) > 1:
+        console.print("[dim]If your phone is on another of this Mac's networks: " + ", ".join(links[1:]) + "[/dim]",
+                      soft_wrap=True)
+    console.print("[dim]Your phone will warn that the connection isn't private: the page uses a certificate of "
+                  "Woodshed's own, which it doesn't know. Go on anyway (Advanced, then Proceed). If macOS asks whether "
+                  "to accept incoming connections, allow them.[/dim]")
+    if filer:
+        console.print("The takes you record there are filed here as they come, and the page shows how they rated. "
+                      "Ctrl+C stops.")
+        filer.start()
+    else:
+        console.print("The takes you record there wait here to be filed: file them with [bold]shed add[/bold]. "
+                      "Ctrl+C stops.")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+        session.stop()  # a question left unanswered: the take waits to be filed
+        if filer:
+            filer.takes.put(None)
+            if filer.busy:
+                console.print("Finishing the take being filed… (Ctrl+C again stops now: it will wait to be filed)")
+            try:
+                filer.join()
+            except KeyboardInterrupt:
+                pass
+    if waiting := len(songs.waiting()):
+        console.print(f"{waiting} take{'' if waiting == 1 else 's'} waiting to be filed. "
+                      f"File {'it' if waiting == 1 else 'them'} with: shed add")
+
+
+class _Stopped(Exception):
+    """`shed serve` stopped before the phone said which song a take is."""
+
+
+class _PhoneFiler(threading.Thread):
+    """Files the takes the phone sends, one at a time, in the order they came (each can help recognize the next)."""
+
+    def __init__(self, songs: Library, settings: config.Config, session: phone.Session, language: str | None):
+        super().__init__(daemon=True)  # a second Ctrl+C mustn't wait for it
+        self.songs, self.settings, self.session, self.language = songs, settings, session, language
+        self.takes: queue.Queue[Path | None] = queue.Queue()
+        self.busy = False
+
+    def run(self) -> None:
+        while (raw := self.takes.get()) is not None:
+            self.busy = True
+            try:
+                _file_from_phone(raw, self.songs, self.settings, self.session, self.language)
+            finally:
+                self.busy = False
+
+
+def _file_from_phone(raw: Path, songs: Library, settings: config.Config, session: phone.Session,
+                     language: str | None) -> None:
+    """File a take the phone sent, asking the phone which song it is when that isn't clear. If it can't be filed,
+    it's left waiting to be filed (by `shed add`, or the next `shed serve`)."""
+    take, filing = raw.name, raw.with_name(raw.name + ".filing")  # meanwhile not waiting: `shed add` leaves it be
+    try:
+        raw.rename(filing)
+    except FileNotFoundError:
+        session.update(take, status="failed", error="it was filed on your Mac already, by shed add")
+        return
+    session.update(take, status="filing")
+    heard = None
+    try:
+        recorded = _raw_time(raw)
+        console.rule(f"Take from your phone, recorded {recorded:%Y-%m-%d %H:%M}")
+        heard = _listen(filing, recorded, songs, language, True, from_mic=False, take_format=_format_chosen(raw))
+        choice, ranked, candidates = _recognize(heard.lines, songs, settings.genius_token)
+        if choice is None:
+            options = _song_options(ranked, candidates[0] if candidates else None, songs)
+            console.print("[dim]Not sure which song this is: asking your phone.[/dim]")
+            if (answer := session.ask(take, [f"{name} ({where})" for _, name, where in options])) is None:
+                raise _Stopped
+            choice = (options[answer["option"]][0] if "option" in answer
+                      else Choice(None) if "unsorted" in answer else _choice_named(answer["name"], songs))
+        filed = _save(heard, choice, songs, lib.fingerprint(filing))
+    except _Stopped:
+        filing.rename(raw)
+        session.update(take, status="kept")
+        return
+    except Exception as e:  # whatever it was, the take isn't lost
+        filing.rename(raw)
+        session.update(take, status="failed", error=f"{e}. It waits on your Mac, to be filed with shed add")
+        console.print(f"[red]Couldn't file the take from your phone: {escape(str(e))}[/red] It waits to be filed.")
+        return
+    finally:
+        if heard:
+            heard.take.unlink(missing_ok=True)  # if it wasn't filed
+    filing.unlink()
+    session.update(take, status="filed", result=_report(filed, config.load().references()))
+
+
+def _report(filed: Filed, references: rating.References) -> dict:
+    """What the phone shows of a take once it's filed: what the terminal says, as plain text."""
+    result = {"song": filed.song or lib.UNSORTED, "take": filed.number, "of": filed.count, "notes": [], "furthest": []}
+    if filed.rated is None:
+        return result
+    overall, details, compared = _rating_parts(filed.rated, filed.earlier, references)
+    result["rating"] = UNRATED if overall is None else " · ".join(
+        [f"Rated {overall:.1f}/10", *details, *([compared] if compared else [])])
+    if comparison := filed.rated.comparison:
+        transposed, sitting, far = _melody_points(comparison)
+        result["notes"] = [note for note in (transposed, sitting) if note]
+        result["furthest"] = [{"time": _clock(line.start), "text": line.text, "off": _off(line)} for line in far]
+        if not sitting and not far:
+            result["notes"].append(ALL_CLOSE)
+    elif filed.reference:
+        result["notes"] = [ON_THE_SCALE]
+    return result
+
+
+def _qr(text: str) -> Text:
+    """A QR code of `text`, two rows of it per line of characters, dark on light whatever the terminal's colors."""
+    import segno
+
+    rows = [list(row) for row in segno.make(text, error="l").matrix_iter(border=2)]
+    rows += [[0] * len(rows[0])] * (len(rows) % 2)
+    code = Text()
+    for top, bottom in zip(rows[::2], rows[1::2]):
+        for dark_top, dark_bottom in zip(top, bottom):
+            code.append("▀", style=f"{'#000000' if dark_top else '#ffffff'} on {'#000000' if dark_bottom else '#ffffff'}")
+        code.append("\n")
+    return code
+
+
+@app.command()
 def devices():
     """List the microphones and audio interfaces you can record from."""
     import sounddevice as sd
@@ -711,36 +873,58 @@ def _score_text(rated: Rated, key: str, references: rating.References) -> str:
     return f"rated {score:.1f}/10"
 
 
-def _rating_line(rated: Rated, earlier: list[Rated], references: rating.References) -> str:
+BEST_YET = "your best take yet!"
+UNRATED = "Not enough singing or strumming to rate this take."
+ON_THE_SCALE = "Too few lines of this take matched the reference, so its pitch is rated against the scale."
+
+
+def _rating_parts(rated: Rated, earlier: list[Rated], references: rating.References,
+                  ) -> tuple[float | None, list[str], str | None]:
+    """A take's overall rating (None if it couldn't be rated), what it's made of, and how it compares with your
+    best among `earlier` takes."""
     s = rated.scores(references)
-    if s["overall"] is None:
-        return "[dim]Not enough singing or strumming to rate this take.[/dim]"
-    parts = [f"Rated [bold]{s['overall']:.1f}/10[/bold]"]
-    parts += [_score_text(rated, key, references) for key in rating.METRICS if s[key] is not None]
+    details = [_score_text(rated, key, references) for key in rating.METRICS if s[key] is not None]
     if s["pitch"] is None:
-        parts.append("pitch: not enough singing to judge")
-    line = " · ".join(parts)
+        details.append("pitch: not enough singing to judge")
     best = max((score for r in earlier if (score := r.scores(references)["overall"]) is not None), default=None)
-    if best is not None:
-        line += " · [green]your best take yet![/green]" if s["overall"] > best else f" · your best: {best:.1f}"
-    return line
+    compared = None if best is None or s["overall"] is None else BEST_YET if s["overall"] > best else f"your best: {best:.1f}"
+    return s["overall"], details, compared
+
+
+def _rating_line(rated: Rated, earlier: list[Rated], references: rating.References) -> str:
+    overall, details, compared = _rating_parts(rated, earlier, references)
+    if overall is None:
+        return f"[dim]{UNRATED}[/dim]"
+    compared = f"[green]{compared}[/green]" if compared == BEST_YET else compared
+    return " · ".join([f"Rated [bold]{overall:.1f}/10[/bold]", *details, *([compared] if compared else [])])
+
+
+ALL_CLOSE = f"No line strays {melody.FAR_CENTS}¢ or more from the melody."
+
+
+def _melody_points(comparison: melody.Comparison) -> tuple[str | None, str | None, list[melody.Line]]:
+    """What stands out in a take against the reference melody: your instrument's key, where your lines sit,
+    and the lines furthest from it."""
+    return melody.transposed(comparison), melody.sitting(comparison), melody.furthest(comparison)
+
+
+def _off(line: melody.Line) -> str:
+    return f"{abs(line.cents):.0f}¢ {'under' if line.cents < 0 else 'over'}"
 
 
 def _melody_feedback(comparison: melody.Comparison) -> None:
-    """What stands out in a take against the reference melody: your instrument's key, where your lines sit,
-    and the lines furthest from it, with when they start in the take."""
-    if note := melody.transposed(comparison):
-        console.print(f"[dim]{note}[/dim]")
-    sitting = melody.sitting(comparison)
+    """_melody_points(), with when the lines furthest from the melody start in the take."""
+    transposed, sitting, far = _melody_points(comparison)
+    if transposed:
+        console.print(f"[dim]{transposed}[/dim]")
     if sitting:
         console.print(sitting)
-    if far := melody.furthest(comparison):
+    if far:
         console.print("Furthest from the melody:")
         for line in far:
-            console.print(f"  {_clock(line.start)}  “{escape(_shorten(line.text))}”  "
-                          f"{abs(line.cents):.0f}¢ {'under' if line.cents < 0 else 'over'}")
+            console.print(f"  {_clock(line.start)}  “{escape(_shorten(line.text))}”  {_off(line)}")
     elif not sitting:
-        console.print(f"No line strays {melody.FAR_CENTS}¢ or more from the melody.")
+        console.print(ALL_CLOSE)
 
 
 def _clock(seconds: float) -> str:
@@ -915,13 +1099,15 @@ def _recordings(paths: list[Path], songs: Library) -> list[tuple[Path, datetime,
 
 def _waiting(songs: Library) -> list[tuple[Path, datetime, str]]:
     """The takes recorded but not filed yet, oldest first, as _recordings() gives them."""
-    def recorded(path: Path) -> datetime:
-        try:
-            return datetime.strptime(path.name[:19], RAW_STAMP)  # before any _2, or .m4a (see rec)
-        except ValueError:
-            return audio.recorded_at(path)
+    return sorted(((path.resolve(), _raw_time(path), "waiting") for path in songs.waiting()), key=lambda r: r[1])
 
-    return sorted(((path.resolve(), recorded(path), "waiting") for path in songs.waiting()), key=lambda r: r[1])
+
+def _raw_time(path: Path) -> datetime:
+    """When a raw recording waiting to be filed was made: its name says (see Library.raw_path)."""
+    try:
+        return datetime.strptime(path.name[:19], lib.RAW_STAMP)  # before any _2, or .m4a
+    except ValueError:
+        return audio.recorded_at(path)
 
 
 def _why_not_a_song(path: Path) -> str | None:
@@ -976,7 +1162,7 @@ def _file_take(src: Path, recorded: datetime, songs: Library, language: str | No
         return None
     try:
         choice, ranked, candidates = _recognize(heard.lines, songs, genius_token)
-        return _save(heard, choice or _ask(ranked, candidates[0] if candidates else None, songs), songs)
+        return _save(heard, choice or _ask(ranked, candidates[0] if candidates else None, songs), songs).path
     finally:
         heard.take.unlink(missing_ok=True)  # if it wasn't filed
 
@@ -1032,20 +1218,34 @@ def _worth_keeping(samples: np.ndarray, start: float, end: float) -> bool:
     return True
 
 
-def _save(heard: Heard, choice: Choice, songs: Library, source: str | None = None) -> Path:
+@dataclass
+class Filed:
+    """A take just filed, and how it rated."""
+    path: Path
+    song: str | None  # None: Unsorted
+    number: int | None  # among the song's takes, oldest first
+    count: int | None
+    rated: Rated | None  # None if it wasn't rated (filed without separating the voice)
+    earlier: list[Rated]  # the song's other takes rated the same way
+    reference: lib.Reference | None
+
+
+def _save(heard: Heard, choice: Choice, songs: Library, source: str | None = None) -> Filed:
     reference = _reference(songs, choice.song) if choice.song else None
     earlier = songs.takes_of(choice.song, melody=reference is not None) if choice.song else []
     dest = songs.add_take(heard.take, choice.song, heard.recorded, heard.lines, choice.genius_id, choice.artist,
                           heard.metrics, source, heard.melody)
-    number = ""
+    number = count = None
     if choice.song:  # counted by date, as `play` and `progress` do: an old voice memo can be take 1 of 4
         takes = songs.songs()[choice.song]
-        number = f" (take {takes.index(dest) + 1} of {len(takes)})"
-    console.print(f"[green]✓[/green] Saved [bold]{escape(str(dest.relative_to(songs.root)))}[/bold]{number}")
+        number, count = takes.index(dest) + 1, len(takes)
+    console.print(f"[green]✓[/green] Saved [bold]{escape(str(dest.relative_to(songs.root)))}[/bold]"
+                  + (f" (take {number} of {count})" if number else ""))
     if choice.song and len(takes) == 1 and not songs.has_reference(choice.song):
         how = "it can find the original on YouTube" if youtube.available() else "give it a recording of the original"
         console.print(f"[dim]To rate your pitch against the original's melody: shed reference "
                       f"{escape(shlex.quote(choice.song))} ({how}).[/dim]")
+    rated, others = None, []
     if heard.metrics:
         rated = _rated(heard.metrics, heard.melody, reference)
         # Your best, among the takes rated the same way (on the melody, or on the scale).
@@ -1055,9 +1255,8 @@ def _save(heard: Heard, choice: Choice, songs: Library, source: str | None = Non
         if rated.comparison:
             _melody_feedback(rated.comparison)
         elif reference:
-            console.print("[dim]Too few lines of this take matched the reference, so its pitch is rated against "
-                          "the scale.[/dim]")
-    return dest
+            console.print(f"[dim]{ON_THE_SCALE}[/dim]")
+    return Filed(dest, choice.song, number, count, rated, others, reference)
 
 
 def _recognize(lines: list[str], songs: Library, genius_token: str | None,
@@ -1110,25 +1309,35 @@ def _choice_for(candidate: genius.Candidate, songs: Library) -> Choice:
 def _ask(ranked: list[tuple[str, float]], suggestion: genius.Candidate | None, songs: Library,
          can_skip: bool = False) -> Choice | None:
     """Which song this is, as you answer. None when `can_skip` and you skip it."""
-    options: list[tuple[Choice, str]] = []
-    if suggestion:
-        options.append((_choice_for(suggestion, songs),
-                        f"{escape(suggestion.title)} — {escape(suggestion.artist)} [dim](Genius)[/dim]"))
-    for song, score in ranked[:3]:
-        if score > 0.03 and all(choice.song != song for choice, _ in options):
-            options.append((Choice(song), f"{escape(song)} [dim](your songs)[/dim]"))
-
+    options = _song_options(ranked, suggestion, songs)
     console.print("[bold]Which song is this?[/bold]")
-    for i, (_, label) in enumerate(options, 1):
-        console.print(f"  {i}. {label}")
+    for i, (_, name, where) in enumerate(options, 1):
+        console.print(f"  {i}. {escape(name)} [dim]({where})[/dim]")
     answer = _input("Number, song name (Tab completes), " + ("Enter for Unsorted, or - to skip it: " if can_skip
                                                             else "or Enter for Unsorted: "), list(songs.songs()))
     if can_skip and answer == "-":
         return None
     if answer.isdigit() and 1 <= int(answer) <= len(options):
         return options[int(answer) - 1][0]
-    name = songs.find_song(answer) or lib.folder_name(answer)
-    return Choice(name or None)
+    return _choice_named(answer, songs)
+
+
+def _song_options(ranked: list[tuple[str, float]], suggestion: genius.Candidate | None, songs: Library,
+                  ) -> list[tuple[Choice, str, str]]:
+    """The songs a take may be, as (choice, name, where it's from): Genius's guess, then your songs sharing its
+    lyrics."""
+    options = []
+    if suggestion:
+        options.append((_choice_for(suggestion, songs), f"{suggestion.title} — {suggestion.artist}", "Genius"))
+    for song, score in ranked[:3]:
+        if score > 0.03 and all(choice.song != song for choice, _, _ in options):
+            options.append((Choice(song), song, "your songs"))
+    return options
+
+
+def _choice_named(name: str, songs: Library) -> Choice:
+    """The song you typed: one of yours however it's typed, a new one, or Unsorted if you typed nothing."""
+    return Choice(songs.find_song(name) or lib.folder_name(name) or None)
 
 
 def _input(prompt: str, completions: list[str]) -> str:

@@ -69,6 +69,12 @@ def export(src: Path, dst: Path, start: float, end: float) -> None:
           "-i", str(src), "-vn", "-map_metadata", "-1", *_CODECS[dst.suffix.lower()], str(dst)])
 
 
+def to_wav(src: Path, dst: Path) -> None:
+    """Decode `src` into a 16-bit wav at `dst` (whatever its name), with its channels and sample rate."""
+    _run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(src), "-vn", "-map_metadata", "-1",
+          "-codec:a", "pcm_s16le", "-f", "wav", str(dst)])
+
+
 def recorded_at(path: Path) -> datetime:
     """When a file was recorded: its embedded creation time (e.g. Voice Memos), else its file date."""
     try:

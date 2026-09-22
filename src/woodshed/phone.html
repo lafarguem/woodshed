@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Woodshed</title>
+<style>
+  :root { --bg: #f6f4ef; --fg: #1d1b18; --dim: #6f6a61; --accent: #c0392b; --ok: #2e7d4f; --card: #fff; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #151412; --fg: #efece6; --dim: #a39d92; --card: #22201d; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--fg);
+         font: 17px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+         display: flex; flex-direction: column; align-items: center;
+         padding: max(24px, env(safe-area-inset-top)) 20px max(24px, env(safe-area-inset-bottom)); }
+  h1 { font-size: 20px; font-weight: 600; margin: 0 0 4px; letter-spacing: .02em; }
+  .hint { color: var(--dim); font-size: 14px; margin: 0 0 28px; text-align: center; max-width: 26em; }
+  #record { width: 176px; height: 176px; border-radius: 50%; border: 0; background: var(--accent); color: #fff;
+            font-size: 20px; font-weight: 600; box-shadow: 0 6px 24px rgba(192, 57, 43, .35); touch-action: manipulation; }
+  #record.on { background: var(--fg); color: var(--bg); box-shadow: none; }
+  #record:disabled { opacity: .5; }
+  #clock { font: 600 40px/1 ui-monospace, SFMono-Regular, Menlo, monospace; margin: 24px 0 12px;
+           font-variant-numeric: tabular-nums; }
+  #meter { width: min(320px, 80vw); height: 8px; border-radius: 4px; background: var(--card); overflow: hidden; }
+  #level { height: 100%; width: 0; background: var(--ok); transition: width .08s linear; }
+  #status { min-height: 3em; margin: 20px 0 8px; text-align: center; max-width: 26em; }
+  .actions { display: flex; gap: 12px; }
+  .actions button, .actions a { font: inherit; padding: 10px 16px; border-radius: 10px; border: 1px solid var(--dim);
+                                background: var(--card); color: var(--fg); text-decoration: none; }
+  #takes { margin: 20px 0 0; width: min(420px, 94vw); }
+  .take { background: var(--card); border-radius: 12px; padding: 12px 14px; margin-bottom: 10px; font-size: 15px; }
+  .take header { display: flex; justify-content: space-between; color: var(--dim); font-size: 13px; }
+  .take .song { font-weight: 600; font-size: 16px; margin-top: 4px; }
+  .take .state { margin-top: 4px; }
+  .take .dim { color: var(--dim); }
+  .take ul { list-style: none; padding: 0; margin: 6px 0 0; }
+  .take li { margin: 4px 0; }
+  .take li .off { color: var(--accent); white-space: nowrap; }
+  .take .choices { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+  .take .choices button, .take .choices input { font: inherit; padding: 9px 12px; border-radius: 9px;
+                                               border: 1px solid var(--dim); background: var(--bg); color: var(--fg); }
+  .take .choices form { display: flex; gap: 8px; }
+  .take .choices input { flex: 1; min-width: 0; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+  <h1>Woodshed</h1>
+  <p class="hint">Each take you record here is sent to your Mac and filed under its song.</p>
+  <button id="record" type="button">Record</button>
+  <div id="clock">0:00</div>
+  <div id="meter"><div id="level"></div></div>
+  <p id="status"></p>
+  <div class="actions" hidden id="actions">
+    <button type="button" id="retry">Send again</button>
+    <a id="save" download>Save on the phone</a>
+  </div>
+  <div id="takes"></div>
+<script>
+"use strict";
+const key = new URLSearchParams(location.search).get("key");
+const $ = (id) => document.getElementById(id);
+const button = $("record"), status = $("status");
+let recorder = null, stream = null, chunks = [], started = 0, ticker = 0, wakeLock = null, audioContext = null;
+let unsent = null;  // a take that couldn't be sent: {blob, started}
+let polling = 0;
+const answering = new Set();  // takes whose question was just answered, until the Mac takes it in
+
+const clock = (seconds) => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
+const say = (text) => { status.textContent = text; };
+
+async function start() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder) {
+    say("This browser won't let the page use the microphone. Open the https:// link that shed serve shows.");
+    return;
+  }
+  try {
+    // Music, not a phone call: no noise suppression, echo cancellation or automatic gain, which smear notes.
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+  } catch (error) {
+    say(error.name === "NotAllowedError"
+      ? "The microphone isn't allowed: allow it for this page (the icon next to the address), then try again."
+      : `Can't use the microphone: ${error.message}`);
+    return;
+  }
+  const type = ["audio/webm;codecs=opus", "audio/mp4", "audio/webm", "audio/ogg"].find(
+    (t) => MediaRecorder.isTypeSupported(t));
+  recorder = new MediaRecorder(stream, type ? { mimeType: type, audioBitsPerSecond: 256000 } : {});
+  chunks = [];
+  recorder.ondataavailable = (event) => { if (event.data.size) chunks.push(event.data); };
+  recorder.onstop = finish;
+  recorder.start(1000);
+  started = Date.now();
+  button.textContent = "Stop";
+  button.classList.add("on");
+  say("Recording…");
+  ticker = setInterval(() => { $("clock").textContent = clock((Date.now() - started) / 1000); }, 250);
+  try { wakeLock = await navigator.wakeLock.request("screen"); } catch (_) { wakeLock = null; }  // keep it recording
+  meter(stream);
+}
+
+function meter(stream) {
+  try {
+    audioContext = new AudioContext();
+    const analyser = audioContext.createAnalyser();
+    analyser.fftSize = 1024;
+    audioContext.createMediaStreamSource(stream).connect(analyser);
+    const samples = new Float32Array(analyser.fftSize);
+    const draw = () => {
+      if (!recorder || recorder.state !== "recording") { $("level").style.width = "0"; return; }
+      analyser.getFloatTimeDomainData(samples);
+      const rms = Math.sqrt(samples.reduce((sum, x) => sum + x * x, 0) / samples.length);
+      const db = 20 * Math.log10(rms + 1e-9);
+      $("level").style.width = `${Math.max(0, Math.min(100, (db + 60) / 60 * 100))}%`;
+      requestAnimationFrame(draw);
+    };
+    draw();
+  } catch (_) { /* no meter, the recording still works */ }
+}
+
+function stop() {
+  button.disabled = true;
+  recorder.stop();
+}
+
+function finish() {
+  clearInterval(ticker);
+  stream.getTracks().forEach((track) => track.stop());
+  if (wakeLock) wakeLock.release().catch(() => {});
+  if (audioContext) audioContext.close().catch(() => {});
+  button.textContent = "Record";
+  button.classList.remove("on");
+  const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+  recorder = null;
+  send({ blob, started });
+}
+
+async function send(take) {
+  $("actions").hidden = true;
+  button.disabled = true;
+  say("Sending to your Mac…");
+  try {
+    const response = await fetch("takes", {
+      method: "POST", body: take.blob,
+      headers: { "X-Woodshed-Key": key, "X-Recorded-At": String(take.started), "Content-Type": take.blob.type } });
+    const answer = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(answer.error || `the Mac answered ${response.status}`);
+    unsent = null;
+    say("Sent.");
+    follow();
+  } catch (error) {
+    unsent = take;
+    const why = error instanceof TypeError  // the browser's "Failed to fetch": no answer at all
+      ? "your Mac didn't answer (is shed serve still running, and the phone on the same Wi-Fi?)" : error.message;
+    say(`Couldn't send it: ${why}. It's still here: send it again, or save it on the phone.`);
+    $("save").href = URL.createObjectURL(take.blob);
+    $("save").download = `woodshed-${new Date(take.started).toISOString().slice(0, 19).replace(/:/g, "-")}` +
+      (take.blob.type.includes("mp4") ? ".m4a" : ".webm");
+    $("actions").hidden = false;
+  } finally {
+    button.disabled = false;
+  }
+}
+
+// What the Mac has done with the takes sent since `shed serve` started, polled while any is still in the works.
+async function follow() {
+  clearTimeout(polling);
+  let state;
+  try {
+    const response = await fetch("takes", { headers: { "X-Woodshed-Key": key }, cache: "no-store" });
+    if (!response.ok) return;
+    state = await response.json();
+  } catch (_) {
+    polling = setTimeout(follow, 5000);  // the Mac is out of reach for now
+    return;
+  }
+  show(state.takes);
+  if (state.takes.some((take) => ["waiting", "filing"].includes(take.status) || answering.has(take.id))) {
+    polling = setTimeout(follow, 1500);
+  }
+}
+
+function element(tag, text, className) {
+  const node = document.createElement(tag);
+  if (text !== undefined) node.textContent = text;
+  if (className) node.className = className;
+  return node;
+}
+
+function show(takes) {
+  const list = $("takes");
+  const typing = document.activeElement && document.activeElement.tagName === "INPUT" ? document.activeElement : null;
+  if (typing) return;  // don't wipe out a song name being typed; the next poll catches up
+  list.replaceChildren();
+  for (const take of [...takes].reverse()) {
+    if (take.status !== "question") answering.delete(take.id);
+    const card = element("section", undefined, "take");
+    const header = element("header");
+    header.append(element("span", new Date(take.started).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })),
+                  element("span", clock(take.seconds)));
+    card.append(header);
+    if (take.status === "kept") card.append(element("div", "Waiting on your Mac: file it there with shed add.", "state dim"));
+    if (take.status === "waiting") card.append(element("div", "Waiting its turn to be filed on your Mac…", "state dim"));
+    if (take.status === "filing") card.append(element("div", "Being filed on your Mac (about a minute)…", "state dim"));
+    if (take.status === "failed") card.append(element("div", `Couldn't file it: ${take.error}.`, "state"));
+    if (take.status === "question") card.append(question(take));
+    if (take.status === "filed") card.append(...result(take.result));
+    list.append(card);
+  }
+}
+
+function question(take) {
+  const box = element("div", undefined, "state");
+  box.append(element("div", "Which song is this?", "song"));
+  const choices = element("div", undefined, "choices");
+  const reply = async (answer) => {
+    answering.add(take.id);
+    choices.querySelectorAll("button, input").forEach((control) => { control.disabled = true; });
+    try {
+      await fetch(`takes/${encodeURIComponent(take.id)}/answer`, {
+        method: "POST", body: JSON.stringify(answer),
+        headers: { "X-Woodshed-Key": key, "Content-Type": "application/json" } });
+    } finally {
+      follow();
+    }
+  };
+  take.options.forEach((option, index) => {
+    const choice = element("button", option);
+    choice.type = "button";
+    choice.addEventListener("click", () => reply({ option: index }));
+    choices.append(choice);
+  });
+  const form = element("form");
+  const name = element("input");
+  name.placeholder = "Or type its name";
+  name.autocapitalize = "words";
+  const file = element("button", "File it");
+  form.append(name, file);
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (name.value.trim()) reply({ name: name.value.trim() });
+  });
+  name.addEventListener("blur", () => setTimeout(follow, 300));
+  const unsorted = element("button", "Leave it in Unsorted");
+  unsorted.type = "button";
+  unsorted.addEventListener("click", () => reply({ unsorted: true }));
+  choices.append(form, unsorted);
+  box.append(choices);
+  return box;
+}
+
+function result(filed) {
+  const parts = [element("div", filed.take ? `${filed.song} · take ${filed.take} of ${filed.of}` : filed.song, "song")];
+  if (filed.rating) parts.push(element("div", filed.rating, "state"));
+  for (const note of filed.notes) parts.push(element("div", note, "state dim"));
+  if (filed.furthest.length) {
+    parts.push(element("div", "Furthest from the melody:", "state"));
+    const lines = element("ul");
+    for (const line of filed.furthest) {
+      const item = element("li");
+      item.append(element("span", `${line.time}  “${line.text}”  `), element("span", line.off, "off"));
+      lines.append(item);
+    }
+    parts.push(lines);
+  }
+  return parts;
+}
+
+button.addEventListener("click", () => (recorder ? stop() : start()));
+$("retry").addEventListener("click", () => unsent && send(unsent));
+window.addEventListener("beforeunload", (event) => {
+  if (recorder || unsent) { event.preventDefault(); event.returnValue = ""; }  // a take would be lost
+});
+if (!key) say("Open the link that shed serve shows: this one is missing its key.");
+else follow();  // the takes sent before this page was (re)loaded
+</script>
+</body>
+</html>

@@ -11,6 +11,7 @@ dependencies = [
     "mutagen>=1.47",
     "numpy>=1.26",
     "rich>=13",
+    "segno>=1.6",
     "sounddevice>=0.5",
     "typer>=0.12",
 ]

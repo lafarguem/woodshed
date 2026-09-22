@@ -69,6 +69,7 @@ shed rec --auto-stop 8      # …or until 8 s of silence
 shed rec --m4a              # save this take as Apple Lossless (or --mp3), whatever `shed init` chose
 shed rec --later            # only record, to record the next take right away…
 shed add                    # …then file every take recorded that way
+shed serve                  # record from your phone: open the page it shows (see below)
 shed add ~/Downloads/*.m4a  # file recordings you already have (voice memos: the date is kept)
 shed add ~/Downloads/Memos  # …or a whole folder: it picks out the songs (see below)
 shed songs                  # every song, with take counts and dates
@@ -101,6 +102,28 @@ playing instead, record with `shed rec --later`: the take is kept as soon as you
 record the next one. `shed add` then files them all, oldest first, and asks about the songs it isn't sure
 of at the end, once it has filed the rest (naming one often makes the others clear). A silent take is
 still caught as soon as you stop, so a microphone that isn't allowed doesn't cost you a session.
+
+### Recording from your phone
+
+Run `shed serve` on the Mac, and open the page it shows on your phone, on the same Wi-Fi: scan its QR code,
+or type the link. Record there: each take is sent to the Mac as soon as you stop, and filed there. The page
+then shows how it went: the song, its rating, and the lines furthest from the melody if the song has a
+reference. When the song isn't clear, the page asks you which it is. Takes are filed one at a time, in the
+order they arrive, so naming the first take of a new song lets the next ones be recognized.
+
+- `shed serve --later` only receives the takes: they wait to be filed by `shed add`, as `shed rec --later`
+  takes do.
+- Ctrl+C stops it. A take being filed is finished first; one whose song you haven't said yet waits for
+  `shed add`, as does any take that couldn't be filed.
+- The page records music as it sounds: without the noise suppression, echo cancellation and automatic volume
+  that phones apply to calls.
+- Phone browsers only let a page use the microphone over HTTPS, so the page has a certificate of Woodshed's
+  own. Your phone warns that it doesn't know it: go on anyway (Advanced, then Proceed). If macOS asks
+  whether to accept incoming connections, allow them.
+- The link carries a secret, so nobody else on the network can send you takes. It stays the same, so you can
+  bookmark it (unless your Mac's address on the network changes).
+- The screen stays on while you record, since a phone that goes to sleep can stop the recording. A take that
+  couldn't be sent stays on the page: send it again, or save it on the phone.
 
 ### Adding a backlog
 
