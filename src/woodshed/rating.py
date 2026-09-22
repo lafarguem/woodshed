@@ -8,7 +8,8 @@ What's measured, and stored with each take:
   worse; against the scale's 7, errors up to 100¢ show, and random notes land around 38¢. RMVPE tracks your voice in the recording as is: on synthetic takes it read within 1.4¢ of the
   truth, against 3-5¢ too harsh for CREPE or RMVPE on the separated voice. With vibrato, scoops
   into notes and falls off them, it still read within 2-3¢; on a real voice, it agreed with YIN
-  (an unrelated pitch tracker) within 1¢ overall.
+  (an unrelated pitch tracker) within 1¢ overall. When the song has a reference recording (`shed
+  reference`), pitch is scored against its melody instead: see melody.py.
 - timing: how much your tempo wanders, as the spread of the local tempo across the song. It
   follows the instrument's attacks (strums, piano chords); for sustained sounds with hardly any
   (organ, pads, bowed strings), it follows when the chords change instead. It catches rushing
@@ -29,8 +30,6 @@ from woodshed.isolate import Stems
 VERSION = 2  # bump when a measurement changes, so older takes get re-analyzed
 METRICS = ("pitch", "timing")
 
-WEIGHTS = {"pitch": 0.6, "timing": 0.4}
-
 EDGE_SECONDS = 5.0  # count-ins and final ringing chords aren't judged for timing
 # The local tempo is looked for within ±13% of the song's tempo: searched wider, the beat gets misread as 3/4 or
 # 4/3 of itself now and then (in 5% of the windows of a steady professional recording, enough to score it 0/10).
@@ -46,7 +45,8 @@ _MIN_VOICE_SECONDS = 5
 
 @dataclass(frozen=True)
 class References:
-    """For each measurement: (value scoring 10, value scoring 0), linear in between."""
+    """For each measurement: (value scoring 10, value scoring 0), linear in between. And how much pitch counts in
+    the overall rating (timing counts for the rest)."""
 
     # Four professional recordings (a studio one, three acoustic covers) measured 9-17¢, and an amateur's
     # takes 6-40¢ (median 27¢). Hence 10/10 at 12¢, a little under professional level to leave room at the
@@ -55,6 +55,10 @@ class References:
     # The same professional recordings measured ±0.1-2.1% (a loose, stripped-back one ±5%); on synthetic
     # takes, a steady player measured ±0% and rushing 12% over a song ±3.5%.
     tempo_spread: tuple[float, float] = (0.01, 0.06)
+    # Against a reference melody (melody.py), how far your lines typically are from it: a professional cover
+    # measured 12¢ against the original, so 10/10 at 15¢; 0/10 at 100¢, a whole semitone off.
+    melody_cents: tuple[float, float] = (15.0, 100.0)
+    pitch_weight: float = 0.6
 
 
 DEFAULTS = References()
@@ -84,31 +88,71 @@ def _linear(value: float, best: float, worst: float) -> float:
     return float(np.clip(10 * (worst - value) / (worst - best), 0, 10))
 
 
-def scores(m: Metrics, references: References = DEFAULTS) -> dict[str, float | None]:
-    """Scores out of 10 for each metric, plus the weighted "overall"."""
+def scores(m: Metrics, references: References = DEFAULTS, melody_cents: float | None = None,
+           ) -> dict[str, float | None]:
+    """Scores out of 10 for each metric, plus the weighted "overall". Given how far the take is from the song's
+    reference melody (melody.Comparison.typical), pitch is scored on that instead of on the scale."""
+    if melody_cents is not None:
+        pitch = _linear(melody_cents, *references.melody_cents)
+    else:
+        pitch = None if m.pitch_cents is None else _linear(m.pitch_cents, *references.pitch_cents)
     parts = {
-        "pitch": None if m.pitch_cents is None else _linear(m.pitch_cents, *references.pitch_cents),
+        "pitch": pitch,
         "timing": None if m.tempo_spread is None else _linear(m.tempo_spread, *references.tempo_spread),
     }
-    known = {k: v for k, v in parts.items() if v is not None}
-    parts["overall"] = (sum(v * WEIGHTS[k] for k, v in known.items()) / sum(WEIGHTS[k] for k in known)
+    weights = {"pitch": references.pitch_weight, "timing": 1 - references.pitch_weight}
+    known = {k: v for k, v in parts.items() if v is not None and weights[k] > 0}  # what's measured, and counts
+    parts["overall"] = (sum(v * weights[k] for k, v in known.items()) / sum(weights[k] for k in known)
                         if known else None)
     return parts
 
 
-def analyze(stems: Stems) -> Metrics:
-    return Metrics(_pitch_cents(stems), _tempo_spread(stems.accompaniment, stems.rate))
+@dataclass
+class Track:
+    """Your voice's pitch through a take, and your instrument's tuning: what the rating and the melody
+    (melody.py) both go by."""
+
+    f0: np.ndarray  # Hz, one estimate every hop_seconds
+    confidence: np.ndarray  # 0-1
+    tuning: float | None  # the instrument's, in cents from A440; None when there's none (a cappella)
+    hop_seconds: float
+
+    @property
+    def cents(self) -> np.ndarray:
+        return 1200 * np.log2(np.maximum(self.f0, 1.0) / 440)
+
+    @property
+    def voiced(self) -> np.ndarray:
+        return self.confidence > 0.5
+
+
+def pitch_track(stems: Stems) -> Track:
+    """RMVPE reads the voice from the take as recorded (see the pitch notes at the top)."""
+    from woodshed import rmvpe
+
+    f0, confidence = rmvpe.pitch(stems.mix_16k())
+    return Track(f0, confidence, _tuning(stems.accompaniment, stems.rate), rmvpe.HOP_SECONDS)
+
+
+def analyze(stems: Stems, track: Track | None = None) -> Metrics:
+    return Metrics(_pitch_cents(track or pitch_track(stems)), _tempo_spread(stems.accompaniment, stems.rate))
 
 
 def held_notes(cents: np.ndarray, voiced: np.ndarray, hop_seconds: float) -> np.ndarray:
-    """The median pitch of each note held for 200 ms or more.
+    """The median pitch of each note held for 200 ms or more."""
+    return np.array([float(np.median(cents[a:b])) for a, b in held_stretches(cents, voiced, hop_seconds)])
+
+
+def held_stretches(cents: np.ndarray, voiced: np.ndarray, hop_seconds: float,
+                   min_seconds: float = 0.2) -> list[tuple[int, int]]:
+    """Where notes are held for `min_seconds` or more: (first frame, frame after the last) of each.
 
     A note is a stretch where the (lightly smoothed) pitch moves slower than 1500¢/s:
     vibrato stays under that (±30¢ at 5.5 Hz peaks near 1000¢/s), slides between notes don't.
     """
     from scipy.ndimage import median_filter
 
-    notes, min_frames = [], int(0.2 / hop_seconds)
+    stretches, min_frames = [], int(min_seconds / hop_seconds)
     size = max(3, int(round(0.11 / hop_seconds)) | 1)
     edges = np.flatnonzero(np.diff(np.concatenate([[0], voiced.astype(int), [0]])))
     for run_start, run_end in zip(edges[::2], edges[1::2]):  # each stretch of continuous singing
@@ -126,9 +170,9 @@ def held_notes(cents: np.ndarray, voiced: np.ndarray, hop_seconds: float) -> np.
             while j < len(raw) and steady[j] and abs(smooth[j] - smooth[i]) < 50:
                 j += 1
             if j - i >= min_frames:
-                notes.append(float(np.median(raw[i:j])))
+                stretches.append((int(run_start + i), int(run_start + j)))
             i = j
-    return np.array(notes)
+    return stretches
 
 
 def sings(samples: np.ndarray) -> bool:
@@ -149,16 +193,13 @@ def sings(samples: np.ndarray) -> bool:
     return len(notes) / voice_minutes >= SINGING_NOTES_PER_VOICE_MINUTE
 
 
-def _pitch_cents(stems: Stems) -> float | None:
-    from woodshed import rmvpe
-
-    f0, confidence = rmvpe.pitch(stems.mix_16k())
-    notes = held_notes(1200 * np.log2(np.maximum(f0, 1.0) / 440), confidence > 0.5, rmvpe.HOP_SECONDS)
+def _pitch_cents(track: Track) -> float | None:
+    notes = held_notes(track.cents, track.voiced, track.hop_seconds)
     if len(notes) < _MIN_NOTES:
         return None
-    tuning = _tuning(stems.accompaniment, stems.rate)
+    tuning = track.tuning
     if tuning is None:  # no instrument to compare against: judge how consistent the notes are
-        tuning = _circular_mean(notes)
+        tuning = circular_mean(notes)
     return float(np.median(off_scale(notes, tuning)))  # the odd misread (or chromatic) note counts for little
 
 
@@ -173,7 +214,7 @@ def off_scale(notes: np.ndarray, tuning: float) -> np.ndarray:
     return min(fits, key=np.mean)
 
 
-def _circular_mean(cents: np.ndarray) -> float:
+def circular_mean(cents: np.ndarray) -> float:
     angles = 2 * np.pi * cents / 100
     return float(np.angle(np.mean(np.exp(1j * angles))) * 100 / (2 * np.pi))
 

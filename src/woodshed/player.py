@@ -4,8 +4,8 @@ import subprocess
 import time
 from pathlib import Path
 
+import mutagen
 from mutagen import MutagenError
-from mutagen.mp3 import MP3
 from rich.console import Console
 from rich.live import Live
 from rich.text import Text
@@ -32,8 +32,8 @@ def _progress(elapsed: float, length: float) -> Text:
 def play(path: Path, console: Console) -> bool:
     """Play one take until it ends or a key is pressed. False if Ctrl+C stopped playback."""
     try:
-        length = MP3(path).info.length
-    except MutagenError:
+        length = mutagen.File(path).info.length
+    except (MutagenError, AttributeError):  # damaged, or not audio mutagen knows
         length = 0.0
     process = subprocess.Popen(["afplay", str(path)])
     started = time.monotonic()

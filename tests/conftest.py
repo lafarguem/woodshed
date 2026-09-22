@@ -1,10 +1,15 @@
 import random
 import subprocess
+from types import SimpleNamespace
 
+import numpy as np
 import pytest
+from typer.testing import CliRunner
 
-from woodshed import config
+from woodshed import cli, config, isolate, melody, rating, transcribe
+from woodshed.library import Library
 from woodshed.lyrics import words
+from woodshed.rating import Metrics
 
 
 @pytest.fixture(autouse=True)
@@ -136,3 +141,53 @@ def held_chords(seconds: float, bpm: float, speed_up: float = 0.0) -> "np.ndarra
         out[i:j] += fade * sum(np.sin(2 * np.pi * 440 * 2 ** ((m - 69) / 12) * tt) for m in chords[k % 4])
         t, k = t + bar, k + 1
     return out * 0.05
+
+
+class Shed:
+    """Woodshed, set up, with a Whisper that hears `heard`, ratings that come out as `metrics`, and a melody
+    followed as `melody`. `checked` and `transcribed` count the recordings checked for singing, and the ones
+    transcribed."""
+
+    def __init__(self, library: Library):
+        self.library, self.heard, self.metrics, self.melody = library, [], Metrics(10, 0.02), None
+        self.checked, self.transcribed = [], []
+
+    def __call__(self, *args: str, input: str = ""):
+        return CliRunner().invoke(cli.app, list(args), input=input)
+
+
+@pytest.fixture
+def shed(tmp_path, monkeypatch):
+    shed = Shed(Library(tmp_path / "lib"))
+    config.save(config.Config(library=str(shed.library.root)))
+    monkeypatch.setattr(cli.models, "missing", lambda: [])
+    monkeypatch.setattr(isolate, "separate", lambda src, start=0.0, seconds=None: SimpleNamespace(
+        vocals_16k=lambda seconds=None: np.zeros(1, np.float32)))
+    monkeypatch.setattr(transcribe, "transcribe", lambda samples, language=None: shed.transcribed.append(1) or [
+        transcribe.Line(line, []) for line in shed.heard])
+    monkeypatch.setattr(rating, "pitch_track", lambda stems: None)
+    monkeypatch.setattr(rating, "analyze", lambda stems, track=None: shed.metrics)
+    monkeypatch.setattr(melody, "extract", lambda stems, lines, track: shed.melody)
+
+    def sings(samples):  # hears singing in a low tone: 1 s of 16 kHz samples makes bin n n Hz
+        shed.checked.append(1)
+        return np.argmax(np.abs(np.fft.rfft(samples[:16_000]))) < 300
+
+    monkeypatch.setattr(rating, "sings", sings)
+    return shed
+
+
+def recording(folder, name, seconds=25, hz=196, when=None):
+    """A sound file standing in for a recording. The fake singing check (see `shed`) hears singing in a
+    low tone like the default, not a high one."""
+    path = folder / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    date = ["-metadata", f"creation_time={when}"] if when else []
+    subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", f"sine=frequency={hz}:duration={seconds}", *date,
+                    str(path)], check=True)
+    return path
+
+
+def add_take(library, src, song, start, end, recorded, lines, **tags):
+    """File the part of `src` from `start` to `end` (seconds) as a take, as `shed add` does."""
+    return library.add_take(library.encode(src, start, end), song, recorded, lines, **tags)

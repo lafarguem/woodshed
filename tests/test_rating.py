@@ -12,8 +12,15 @@ from woodshed.rating import Metrics
 def test_scores_map_measurements_onto_ten_and_weight_them():
     s = rating.scores(Metrics(pitch_cents=5.0, tempo_spread=0.06))
     assert (s["pitch"], s["timing"]) == (10.0, 0.0)
-    assert s["overall"] == pytest.approx(10 * rating.WEIGHTS["pitch"])
+    assert s["overall"] == pytest.approx(10 * rating.DEFAULTS.pitch_weight)
     assert rating.scores(Metrics(40.0, 0.0))["pitch"] == 0.0  # clamped
+
+
+def test_how_much_pitch_counts_can_be_chosen():
+    take = Metrics(pitch_cents=5.0, tempo_spread=0.06)  # 10 on pitch, 0 on timing
+    assert rating.scores(take, rating.References(pitch_weight=0.8))["overall"] == pytest.approx(8)
+    assert rating.scores(take, rating.References(pitch_weight=0))["overall"] == 0
+    assert rating.scores(Metrics(5.0, None), rating.References(pitch_weight=0))["overall"] is None  # no timing to go by
 
 
 def test_overall_uses_what_could_be_measured():
@@ -47,19 +54,15 @@ def test_notes_are_judged_against_the_songs_scale():
     assert np.median(rating.off_scale(random_notes, 0.0)) > 35  # and 25 against all 12
 
 
-def test_a_takes_pitch_is_read_against_the_scale_it_fits(monkeypatch):
-    from woodshed import rmvpe
-
+def test_a_takes_pitch_is_read_against_the_scale_it_fits():
     # Nine notes of C major in tune, then eleven 60¢ sharp of notes that have a whole tone above them.
     in_tune = [-900, -700, -500, -400, -200, 0, 200, 300, 500]  # C4 to D5, in cents from A440
     sharp = [note + 60 for note in [-900, -700, -400, -200, 0] * 2 + [-900]]
     cents = np.concatenate([np.r_[np.full(50, c, float), np.full(10, np.nan)] for c in in_tune + sharp])  # 0.5 s each
     f0 = np.where(np.isnan(cents), 0.0, 440 * 2 ** (np.nan_to_num(cents) / 1200))
-    monkeypatch.setattr(rmvpe, "pitch", lambda samples: (f0, np.where(np.isnan(cents), 0.0, 0.9)))
-    monkeypatch.setattr(rating, "_tuning", lambda accompaniment, rate: 0.0)
-    silence = np.zeros(16_000, np.float32)
+    track = rating.Track(f0, np.where(np.isnan(cents), 0.0, 0.9), tuning=0.0, hop_seconds=0.01)
     # Against all 12 notes, the sharp ones would read 40¢ (from the note above them), and so would the take.
-    assert rating._pitch_cents(Stems(silence, silence, silence, 16_000)) == pytest.approx(60, abs=1)
+    assert rating._pitch_cents(track) == pytest.approx(60, abs=1)
 
 
 def test_timing_leaves_out_where_the_beat_isnt_found_and_the_odd_misreading(monkeypatch):

@@ -10,42 +10,10 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import sounddevice as sd
-from conftest import SONGS, mishear
-from typer.testing import CliRunner
+from conftest import SONGS, add_take, mishear, recording
 
-from woodshed import cli, config, genius, isolate, rating, recorder, transcribe
-from woodshed.library import Library
+from woodshed import audio, config, genius, isolate, recorder, transcribe
 from woodshed.rating import Metrics
-
-
-class Shed:
-    """Woodshed, set up, with a Whisper that hears `heard` and ratings that come out as `metrics`.
-    `checked` and `transcribed` count the recordings checked for singing, and the ones transcribed."""
-
-    def __init__(self, library: Library):
-        self.library, self.heard, self.metrics = library, [], Metrics(10, 0.02)
-        self.checked, self.transcribed = [], []
-
-    def __call__(self, *args: str, input: str = ""):
-        return CliRunner().invoke(cli.app, list(args), input=input)
-
-
-@pytest.fixture
-def shed(tmp_path, monkeypatch):
-    shed = Shed(Library(tmp_path / "lib"))
-    config.save(config.Config(library=str(shed.library.root)))
-    monkeypatch.setattr(cli.models, "missing", lambda: [])
-    monkeypatch.setattr(isolate, "separate", lambda src, start=0.0, seconds=None: SimpleNamespace(
-        vocals_16k=lambda seconds: np.zeros(1, np.float32)))
-    monkeypatch.setattr(transcribe, "transcribe", lambda samples, language=None: shed.transcribed.append(1) or shed.heard)
-    monkeypatch.setattr(rating, "analyze", lambda stems: shed.metrics)
-
-    def sings(samples):  # hears singing in a low tone: 1 s of 16 kHz samples makes bin n n Hz
-        shed.checked.append(1)
-        return np.argmax(np.abs(np.fft.rfft(samples[:16_000]))) < 300
-
-    monkeypatch.setattr(rating, "sings", sings)
-    return shed
 
 
 @pytest.fixture
@@ -54,17 +22,6 @@ def mic(monkeypatch):
     mic = SimpleNamespace(take=None)
     monkeypatch.setattr(recorder, "record", lambda dest, *args: shutil.copy(mic.take, dest))
     return mic
-
-
-def recording(folder, name, seconds=25, hz=196, when=None):
-    """A sound file standing in for a recording. The fake singing check (see `shed`) hears singing in a
-    low tone like the default, not a high one."""
-    path = folder / name
-    path.parent.mkdir(parents=True, exist_ok=True)
-    date = ["-metadata", f"creation_time={when}"] if when else []
-    subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", f"sine=frequency={hz}:duration={seconds}", *date,
-                    str(path)], check=True)
-    return path
 
 
 def genius_finds(monkeypatch, title, genius_id):
@@ -78,7 +35,7 @@ def text(result):
 
 
 def test_a_take_of_a_song_you_have_recorded_is_filed_with_it(shed, tone, rng):
-    shed.library.add_take(tone, "Harbor Lights", 2, 7, datetime(2020, 6, 2, 20, 0),
+    add_take(shed.library, tone, "Harbor Lights", 2, 7, datetime(2020, 6, 2, 20, 0),
                           mishear(SONGS["Harbor Lights"], 0.3, rng), metrics=Metrics(25, 0.02))
     shed.heard = mishear(SONGS["Harbor Lights"], 0.3, rng, keep=0.6)
 
@@ -94,7 +51,7 @@ def test_a_take_of_a_song_you_have_recorded_is_filed_with_it(shed, tone, rng):
 
 def test_an_older_recording_is_numbered_by_when_it_was_recorded(shed, tone, rng, tmp_path):
     for month in (7, 8, 9):
-        shed.library.add_take(tone, "Harbor Lights", 2, 7, datetime(2026, month, 1, 20, 0),
+        add_take(shed.library, tone, "Harbor Lights", 2, 7, datetime(2026, month, 1, 20, 0),
                               mishear(SONGS["Harbor Lights"], 0.3, rng))
     memo = tmp_path / "memo.m4a"  # a voice memo from before those takes, its date inside it
     subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=196:duration=5",
@@ -127,7 +84,7 @@ def test_a_new_song_is_recognized_on_genius_brackets_and_all(shed, tone, rng, mo
     ("", "Unsorted"),
 ])
 def test_you_choose_the_song_when_it_isnt_clear(shed, tone, monkeypatch, answer, folder):
-    shed.library.add_take(tone, "Kitchen Floor", 2, 7, datetime(2020, 6, 2, 20, 0), [SONGS["Kitchen Floor"]])
+    add_take(shed.library, tone, "Kitchen Floor", 2, 7, datetime(2020, 6, 2, 20, 0), [SONGS["Kitchen Floor"]])
     genius_finds(monkeypatch, "Night River", 7)
     shed.heard = ["we drove along the river in the rain tonight"]  # one search only: too little to be sure
 
@@ -169,7 +126,8 @@ def test_a_recording_that_couldnt_be_filed_waits_until_shed_add_files_it(shed, m
     failed = shed("rec", input="y\n")  # keep it although it's short
     assert "Your recording is safe in" in text(failed)
     [raw] = shed.library.waiting()
-    assert "1 recording(s) couldn't be filed yet. File them with: shed add" in text(shed("songs"))
+    assert list(shed.library.incoming.glob("filing-*")) == []  # the take encoded for filing is gone
+    assert "1 take waiting to be filed. File it with: shed add" in text(shed("songs"))
 
     monkeypatch.setattr(transcribe, "transcribe", lambda samples, language=None: [])
     memo = recording(tmp_path, "memo.m4a")
@@ -178,7 +136,7 @@ def test_a_recording_that_couldnt_be_filed_waits_until_shed_add_files_it(shed, m
     assert result.exit_code == 0, result.output
     assert len(shed.library.unsorted()) == 2
     assert not raw.exists() and memo.exists()  # Woodshed's raw copy goes once filed; your own file stays
-    assert "couldn't be filed" not in text(shed("songs"))
+    assert "waiting to be filed" not in text(shed("songs"))
 
 
 def test_a_silent_recording_is_not_kept(shed, mic, tmp_path):
@@ -213,7 +171,7 @@ def test_a_microphone_that_cant_record_that_way_is_reported(shed, monkeypatch):
 
 
 def test_a_folder_files_its_songs_and_passes_over_the_rest(shed, tone, rng, tmp_path):
-    shed.library.add_take(tone, "Harbor Lights", 2, 7, datetime(2020, 6, 2, 20, 0), mishear(SONGS["Harbor Lights"], 0.3, rng))
+    add_take(shed.library, tone, "Harbor Lights", 2, 7, datetime(2020, 6, 2, 20, 0), mishear(SONGS["Harbor Lights"], 0.3, rng))
     memos = tmp_path / "memos"
     recording(memos, "Standard recording 1.m4a")  # sung
     recording(memos, "Standard recording 2.m4a", hz=660)  # talking
@@ -274,6 +232,7 @@ def test_a_song_you_skip_isnt_asked_about_again(shed, tmp_path):
     again = shed("add", str(memos))
 
     assert skipped.exit_code == 0 and shed.library.unsorted() == [] and shed.library.songs() == {}
+    assert list(shed.library.incoming.glob("filing-*")) == []  # the take encoded for filing is gone
     assert "Which song is this?" not in again.output and "you skipped it (1)" in text(again)
 
 
@@ -297,3 +256,124 @@ def test_a_recording_is_never_filed_twice(shed, tone):
     assert first.exit_code == 0 and again.exit_code == 0
     assert "is already filed, as Unsorted/" in text(again)
     assert len(shed.library.unsorted()) == 1
+
+
+def test_takes_recorded_for_later_are_filed_together(shed, mic, rng, tmp_path):
+    mic.take = recording(tmp_path, "take.wav")
+    shed.heard = mishear(SONGS["Gravel Road"], 0.3, rng)  # a song you haven't filed takes of yet
+
+    first, second = shed("rec", "--later"), shed("rec", "--later")
+
+    assert first.exit_code == 0 and second.exit_code == 0, second.output
+    assert "Kept for later (2 takes waiting). File them with shed add." in text(second)
+    assert shed.transcribed == [] and len(shed.library.waiting()) == 2
+
+    result = shed("add", input="Gravel Road\n")
+
+    assert result.exit_code == 0, result.output
+    # Neither was clear, so both waited for the end: naming the first made the second clear.
+    assert "Unsure 1 of 2: take recorded" in text(result)
+    assert text(result).count("Which song is this?") == 1 and "or - to skip it" not in text(result)
+    assert "Recognized Gravel Road from your earlier takes" in text(result) and "Filed 2 takes" in text(result)
+    assert len(shed.library.takes_of("Gravel Road")) == 2 and shed.library.waiting() == []
+    assert "No takes are waiting to be filed" in text(shed("add"))
+
+
+def test_a_silent_take_isnt_kept_for_later(shed, mic, tmp_path):
+    mic.take = tmp_path / "silence.wav"
+    with wave.open(str(mic.take), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(16_000)
+        wav.writeframes(bytes(2 * 16_000 * 30))
+
+    result = shed("rec", "--later")
+
+    assert "completely silent, so it wasn't kept" in text(result) and shed.library.waiting() == []
+
+
+def test_a_take_isnt_waiting_to_be_filed_until_its_recorded(shed, tone, monkeypatch):
+    # So that `shed add`, run while you record, can't file (and then remove) half a take.
+    while_recording = []
+
+    def record(dest, *args):
+        shutil.copy(tone, dest)  # the audio so far
+        while_recording.append(shed.library.waiting())
+
+    monkeypatch.setattr(recorder, "record", record)
+    result = shed("rec", "--later", input="y\n")  # keep it although it's short
+
+    assert result.exit_code == 0, result.output
+    assert while_recording == [[]] and len(shed.library.waiting()) == 1
+
+
+def test_whats_analyzed_is_the_take_as_filed(shed, tone, monkeypatch):
+    # Not the recording it was made from, which reads a little differently: analyzed again later (after an
+    # update, say), a take then reads the same.
+    analyzed = []
+
+    def separate(src, start=0.0, seconds=None):
+        analyzed.append(audio.load(src))
+        return SimpleNamespace(vocals_16k=lambda seconds=None: np.zeros(1, np.float32))
+
+    monkeypatch.setattr(isolate, "separate", separate)
+    result = shed("add", str(tone), input="\n")  # Enter: Unsorted
+
+    assert result.exit_code == 0, result.output
+    [take] = shed.library.unsorted()
+    assert np.array_equal(analyzed[0], audio.load(take))
+    assert list(shed.library.incoming.glob("*")) == []
+
+
+def test_takes_can_be_saved_in_apple_lossless(shed, tone, rng):
+    from test_melody import REFERENCE
+
+    add_take(shed.library, tone, "Harbor Lights", 2, 7, datetime(2020, 6, 2, 20, 0),
+             mishear(SONGS["Harbor Lights"], 0.3, rng))  # an mp3, filed before
+    config.save(config.Config(library=str(shed.library.root), take_format="m4a"))
+    shed.heard, shed.melody = mishear(SONGS["Harbor Lights"], 0.3, rng, keep=0.6), REFERENCE
+
+    result = shed("add", str(tone))
+
+    assert result.exit_code == 0, result.output
+    assert "Recognized Harbor Lights from your earlier takes" in text(result) and "(take 2 of 2)" in text(result)
+    before, new = shed.library.takes_of("Harbor Lights", melody=True)
+    assert (before.path.suffix, new.path.suffix) == (".mp3", ".m4a")
+    codec = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_name", "-of", "csv=p=0",
+                            str(new.path)], capture_output=True, text=True, check=True).stdout.strip()
+    assert codec == "alac"
+    assert new.transcript == "\n".join(shed.heard) and new.metrics == shed.metrics and new.melody == REFERENCE
+    shed.library.save_metrics(new.path, Metrics(12, 0.03))
+    assert shed.library.takes_of("Harbor Lights")[1].metrics == Metrics(12, 0.03)
+    assert "?" not in shed("songs", "harbor").output  # its length is read too
+
+
+def test_stopping_at_the_question_leaves_the_recording_waiting(shed, mic, tmp_path, monkeypatch):
+    def stop(prompt):
+        raise KeyboardInterrupt  # Ctrl+C at "Which song is this?"
+
+    mic.take = recording(tmp_path, "take.wav")  # long enough not to be asked whether to keep it
+    monkeypatch.setattr("builtins.input", stop)
+    result = shed("rec")
+
+    assert result.exit_code != 0 and "Your recording is safe in" in text(result)
+    assert len(shed.library.waiting()) == 1 and list(shed.library.incoming.glob("filing-*")) == []
+
+
+def test_a_take_can_be_saved_in_another_format_than_usual(shed, mic, tmp_path, rng):
+    def rec(*args, input=""):
+        n = len(list(tmp_path.glob("take*")))
+        mic.take = recording(tmp_path, f"take{n}.wav", hz=150 + 10 * n)
+        return shed("rec", *args, input=input)  # each take its own recording, not a copy: never filed twice
+
+    shed.heard = mishear(SONGS["Gravel Road"], 0.3, rng)
+    now = rec("--m4a", input="Gravel Road\n")
+    rec("--later", "--m4a")  # remembered until it's filed
+    rec("--later")
+    later = shed("add")
+
+    assert now.exit_code == 0 and later.exit_code == 0, later.output
+    assert [take.suffix for take in shed.library.songs()["Gravel Road"]] == [".m4a", ".m4a", ".mp3"]
+    config.save(config.Config(library=str(shed.library.root), take_format="m4a"))
+    rec("--mp3")
+    assert shed.library.songs()["Gravel Road"][-1].suffix == ".mp3"

@@ -57,9 +57,16 @@ def playing_bounds(samples: np.ndarray, pad: float = 1.5) -> tuple[float, float]
     return start, end
 
 
-def export_mp3(src: Path, dst: Path, start: float, end: float) -> None:
+_CODECS = {
+    ".mp3": ["-codec:a", "libmp3lame", "-q:a", "2"],  # about 190 kbps
+    ".m4a": ["-codec:a", "alac", "-sample_fmt", "s16p"],  # Apple Lossless, at CD quality
+}
+
+
+def export(src: Path, dst: Path, start: float, end: float) -> None:
+    """Encode `src` from `start` to `end` (seconds) into `dst`: an mp3, or Apple Lossless for an .m4a."""
     _run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-ss", f"{start:.2f}", "-t", f"{end - start:.2f}",
-          "-i", str(src), "-vn", "-map_metadata", "-1", "-codec:a", "libmp3lame", "-q:a", "2", str(dst)])
+          "-i", str(src), "-vn", "-map_metadata", "-1", *_CODECS[dst.suffix.lower()], str(dst)])
 
 
 def recorded_at(path: Path) -> datetime:

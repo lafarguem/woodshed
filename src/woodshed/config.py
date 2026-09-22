@@ -18,7 +18,8 @@ DEFAULT_LIBRARY = "~/Music/Woodshed"
 # Earlier versions saved every setting, rating reference points included, so a saved default doesn't mean
 # it was chosen: a value that was the default then gives way to today's (as long as that stays consistent).
 _FORMER_DEFAULTS = {"pitch_best_cents": 5.0, "pitch_worst_cents": 25.0}
-_REFERENCES = ("pitch_best_cents", "pitch_worst_cents", "timing_best_percent", "timing_worst_percent")
+_REFERENCES = ("pitch_best_cents", "pitch_worst_cents", "timing_best_percent", "timing_worst_percent",
+               "pitch_weight_percent")
 
 
 class Unreadable(SystemExit):
@@ -35,17 +36,21 @@ class Config:
     pitch_worst_cents: float = rating.DEFAULTS.pitch_cents[1]
     timing_best_percent: float = 100 * rating.DEFAULTS.tempo_spread[0]
     timing_worst_percent: float = 100 * rating.DEFAULTS.tempo_spread[1]
+    take_format: str = "mp3"  # or "m4a": Apple Lossless, about 4 times larger
+    pitch_weight_percent: float = 100 * rating.DEFAULTS.pitch_weight  # of the overall rating; timing is the rest
 
     def references(self) -> rating.References:
         if not self.consistent():
-            raise SystemExit(f"The rating reference points in {PATH} are inconsistent (each 10/10 value must be "
-                             "below its 0/10 value). Run `shed init` to set them again.")
+            raise SystemExit(f"The rating settings in {PATH} are inconsistent (each 10/10 value must be below its "
+                             "0/10 value, and pitch's share between 0 and 100%). Run `shed init` to set them again.")
         return rating.References((float(self.pitch_best_cents), float(self.pitch_worst_cents)),
-                                 (float(self.timing_best_percent) / 100, float(self.timing_worst_percent) / 100))
+                                 (float(self.timing_best_percent) / 100, float(self.timing_worst_percent) / 100),
+                                 pitch_weight=float(self.pitch_weight_percent) / 100)
 
     def consistent(self) -> bool:
         return (0 <= float(self.pitch_best_cents) < float(self.pitch_worst_cents)
-                and 0 <= float(self.timing_best_percent) < float(self.timing_worst_percent))
+                and 0 <= float(self.timing_best_percent) < float(self.timing_worst_percent)
+                and 0 <= float(self.pitch_weight_percent) <= 100)
 
 
 def exists() -> bool:

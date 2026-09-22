@@ -1,6 +1,7 @@
 from datetime import datetime
 
 import pytest
+from conftest import add_take
 from typer.testing import CliRunner
 
 from woodshed import cli, player, rating
@@ -32,9 +33,9 @@ def songs(tmp_path, tone, monkeypatch):
     # Filed out of order: playback must follow the recording dates.
     # Pitch is worst on the 14th and best on the 30th; timing is worst on the 30th.
     for day, metrics in ((14, Metrics(35, 0.01)), (2, Metrics(28, 0.02)), (30, Metrics(10, 0.05))):
-        library.add_take(tone, "Harbor Lights", 2, 7, datetime(2026, 6, day, 20, 0), [], metrics=metrics)
-    library.add_take(tone, "Harbor Song", 2, 7, datetime(2026, 6, 1, 20, 0), [])
-    library.add_take(tone, "Winter Town", 2, 7, datetime(2026, 6, 1, 20, 0), [])
+        add_take(library, tone, "Harbor Lights", 2, 7, datetime(2026, 6, day, 20, 0), [], metrics=metrics)
+    add_take(library, tone, "Harbor Song", 2, 7, datetime(2026, 6, 1, 20, 0), [])
+    add_take(library, tone, "Winter Town", 2, 7, datetime(2026, 6, 1, 20, 0), [])
     FakeAfplay.played = []
     monkeypatch.setattr(player.subprocess, "Popen", FakeAfplay)  # after ffmpeg has made the takes
     return library
@@ -80,16 +81,18 @@ def test_rating_plays_the_worst_take_then_the_best(songs):
     assert "worst take by rating (2 of 3)" in text(result) and "rated 6.8/10" in text(result)
 
 
-def test_rating_by_one_metric(songs):
-    assert play(songs, "harbor lights", "--rating", "timing").exit_code == 0
-    assert played() == ["30", "14"]  # timing: 2.0 on the 30th, 10 on the 14th
+@pytest.mark.parametrize("flag, days", [("--pitch", ["14", "30"]), ("--timing", ["30", "14"]), ("--tempo", ["30", "14"])])
+def test_rating_by_one_metric(songs, flag, days):
+    # pitch: 0.0 on the 14th, 10 on the 30th; timing: 2.0 on the 30th, 10 on the 14th
+    result = play(songs, "harbor", "lights", flag)  # the name needn't be quoted
+    assert result.exit_code == 0, result.output
+    assert played() == days and f"by {flag.strip('-').replace('tempo', 'timing')}" in text(result)
 
 
-def test_a_metric_alone_implies_rating_and_unknown_ones_are_refused(songs):
-    assert play(songs, "harbor lights", "pitch").exit_code == 0 and played() == ["14", "30"]
-    FakeAfplay.played = []
-    refused = play(songs, "harbor", "lights")
-    assert refused.exit_code == 1 and "isn't a rating" in refused.output and FakeAfplay.played == []
+def test_one_rating_at_a_time(songs):
+    refused = play(songs, "harbor lights", "--pitch", "--timing")
+    assert refused.exit_code == 1 and "Choose one of --rating, --pitch and --timing" in text(refused)
+    assert FakeAfplay.played == []
 
 
 def test_progress_rates_older_takes_once(songs, monkeypatch):
@@ -97,7 +100,7 @@ def test_progress_rates_older_takes_once(songs, monkeypatch):
 
     calls = []
     monkeypatch.setattr(isolate, "separate", lambda path: calls.append(path) or None)
-    monkeypatch.setattr(rating, "analyze", lambda stems: Metrics(18, 0.01))
+    monkeypatch.setattr(rating, "analyze", lambda stems, track=None: Metrics(18, 0.01))
     monkeypatch.setattr(cli.models, "missing", lambda: [])
     runner = CliRunner()
 

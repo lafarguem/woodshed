@@ -47,7 +47,7 @@ def setup(tmp_path, monkeypatch):
 
 def test_init_saves_folder_microphone_and_a_working_token(setup, tmp_path):
     folder = tmp_path / "My Covers"
-    result = setup(str(folder), "", "", tokens=["bad-token", "good-token"])  # Enter: suggested mic, default ratings
+    result = setup(str(folder), "", "", "", tokens=["bad-token", "good-token"])  # Enter: suggested mic, default ratings
 
     assert result.exit_code == 0, result.output
     assert "Genius rejected that token" in result.output and "Token works" in result.output
@@ -60,7 +60,7 @@ def test_init_saves_folder_microphone_and_a_working_token(setup, tmp_path):
 
 def test_first_run_works_by_pressing_enter_at_every_question(setup, tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))  # so the default ~/Music/Woodshed lands in the test folder
-    result = setup("", "", "", tokens=[""])
+    result = setup("", "", "", "", tokens=[""])
 
     assert result.exit_code == 0, result.output
     assert config.load() == config.Config(device="MacBook Pro Microphone")  # every other answer is the default
@@ -68,25 +68,27 @@ def test_first_run_works_by_pressing_enter_at_every_question(setup, tmp_path, mo
 
 
 def test_running_init_again_keeps_previous_answers(setup, tmp_path):
-    setup(str(tmp_path / "lib"), "1", "y", "4", "30", "2", "8", tokens=["good-token"])
-    result = setup("", "", "", tokens=[""])  # Enter everywhere
+    setup(str(tmp_path / "lib"), "", "1", "y", "4", "30", "2", "8", "70", tokens=["good-token"])
+    result = setup("", "", "", "", tokens=[""])  # Enter everywhere
 
     assert result.exit_code == 0, result.output
-    assert config.load() == config.Config(str(tmp_path / "lib"), "Galaxy Buds2 Pro", "good-token", 4, 30, 2, 8)
+    assert config.load() == config.Config(str(tmp_path / "lib"), "Galaxy Buds2 Pro", "good-token", 4, 30, 2, 8,
+                                          pitch_weight_percent=70)
 
 
 def test_token_is_optional(setup, tmp_path):
-    result = setup(str(tmp_path), "2", "", tokens=[""])
+    result = setup(str(tmp_path), "", "2", "", tokens=[""])
     assert result.exit_code == 0 and config.load().genius_token is None
 
 
 def test_rating_reference_points_can_be_changed(setup, tmp_path):
     # An inconsistent pitch range (10/10 above 0/10) is asked again.
-    result = setup(str(tmp_path), "", "y", "20", "10", "3", "15", "", "", tokens=[""])
+    result = setup(str(tmp_path), "", "", "y", "20", "10", "3", "15", "", "", "120", "80", tokens=[""])
     assert result.exit_code == 0, result.output
-    assert "must be below the 0/10 value, and at most 50" in result.output
+    assert "must be below the 0/10 value, and at most 50" in result.output and "Between 0 and 100" in result.output
     references = config.load().references()
     assert references.pitch_cents == (3, 15) and references.tempo_spread == (0.01, 0.06)  # timing kept
+    assert references.pitch_weight == 0.8
 
 
 def test_a_hand_edited_inconsistent_range_is_refused(tmp_path, monkeypatch):
@@ -127,7 +129,7 @@ def test_emoji_in_names_dont_break_the_config():
 def test_init_starts_over_from_an_unreadable_config(setup, tmp_path):
     config.PATH.parent.mkdir(parents=True)
     config.PATH.write_text('library = "~/Music/\\ud83c\\udfb8 Covers"\n')  # as older versions wrote emoji
-    result = setup(str(tmp_path / "lib"), "", "", tokens=[""])
+    result = setup(str(tmp_path / "lib"), "", "", "", tokens=[""])
 
     assert result.exit_code == 0, result.output
     assert "starting from the defaults" in text(result)  # after the config's path, so wrapped wherever it ends
@@ -135,7 +137,7 @@ def test_init_starts_over_from_an_unreadable_config(setup, tmp_path):
 
 
 def test_an_endless_timing_range_is_asked_again(setup, tmp_path):
-    result = setup(str(tmp_path), "", "y", "", "", "1", "inf", "1", "8", tokens=[""])
+    result = setup(str(tmp_path), "", "", "y", "", "", "1", "inf", "1", "8", "", tokens=[""])
     assert result.exit_code == 0, result.output
     assert "at most 15" in text(result)
     assert config.load().references().tempo_spread == (0.01, 0.08)
@@ -147,14 +149,16 @@ def test_arrow_keys_pick_the_microphone_and_slide_the_ratings(setup, tmp_path):
             "left", "left", "enter",  # pitch 10/10 within 12¢ -> 10¢
             "enter",  # pitch 0/10 from 38¢, kept
             "right", "enter",  # timing 10/10 within ±1% -> ±1.5%
-            "up", "enter"]  # timing 0/10 from ±6% -> ±8.5% (a big step)
-    result = setup(str(tmp_path), tokens=[""], keys=keys)
+            "up", "enter",  # timing 0/10 from ±6% -> ±8.5% (a big step)
+            "left", "left", "enter"]  # the rating: 60% pitch -> 50%
+    result = setup(str(tmp_path), tokens=[""], keys=["enter", *keys])  # Enter: MP3
 
     assert result.exit_code == 0, result.output
     saved = config.load()
     assert saved.device == "Galaxy Buds2 Pro"
     assert (saved.pitch_best_cents, saved.pitch_worst_cents) == (10, 38)
     assert (saved.timing_best_percent, saved.timing_worst_percent) == (1.5, 8.5)
+    assert saved.pitch_weight_percent == 50
 
 
 def test_a_config_from_an_earlier_version_gets_todays_pitch_default():
@@ -170,3 +174,21 @@ def test_settings_left_at_their_defaults_arent_saved():
     config.save(config.Config(device="MacBook Pro Microphone", timing_worst_percent=8))
     saved = config.PATH.read_text()
     assert "pitch_" not in saved and "timing_best_percent" not in saved and "timing_worst_percent = 8" in saved
+    config.save(config.Config(pitch_weight_percent=75))
+    assert config.PATH.read_text() == "library = \"~/Music/Woodshed\"\ntake_format = \"mp3\"\npitch_weight_percent = 75\n"
+
+
+@pytest.mark.parametrize("keys", [None, ["down", "enter", "enter", "enter"]])  # typed, or with the arrow keys
+def test_takes_can_be_saved_in_apple_lossless(setup, tmp_path, keys):
+    typed = ("m4a",) if keys is None else ()
+    result = setup(str(tmp_path), *typed, "", "", tokens=[""], keys=keys)
+
+    assert result.exit_code == 0, result.output
+    assert "Apple Lossless" in result.output and config.load().take_format == "m4a"
+
+
+def test_a_take_format_typed_by_hand_is_refused(tmp_path, monkeypatch):
+    config.save(config.Config(library=str(tmp_path), take_format="flac"))
+    monkeypatch.setattr(cli.models, "missing", lambda: [])
+    result = CliRunner().invoke(cli.app, ["add", str(tmp_path)])
+    assert result.exit_code == 1 and "must be mp3 or m4a" in " ".join(result.output.split())
