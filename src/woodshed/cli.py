@@ -41,6 +41,8 @@ LibraryOpt = Annotated[Path | None, typer.Option("--library", "-l", envvar="WOOD
                                                  help="Folder holding your songs. [default: set by `shed init`]")]
 LanguageOpt = Annotated[str | None, typer.Option(envvar="WOODSHED_LANGUAGE",
                                                  help="Language you sing in (en, fr…). Detected if omitted.")]
+TakeOpt = Annotated[int | None, typer.Option("--take", "-t", min=1, show_default=False,
+                                             help="Just this take, numbered as `shed progress` numbers them.")]
 IsolateOpt = Annotated[bool, typer.Option(help="Separate your voice from the instrument: needed to rate the take, "
                                                "and far better lyrics when the instrument is loud.")]
 
@@ -296,14 +298,15 @@ def play(
     by_rating: Annotated[bool, typer.Option("--rating", help="Play your worst take, then your best.")] = False,
     by_pitch: Annotated[bool, typer.Option("--pitch", help="The same, by pitch alone.")] = False,
     by_timing: Annotated[bool, typer.Option("--timing", "--tempo", help="The same, by timing alone.")] = False,
+    take: TakeOpt = None,
     library: LibraryOpt = None,
 ):
     """Play a song's first take, then its latest, to hear how far you've come."""
     from woodshed import player
 
     chosen = [key for key, on in (("overall", by_rating), ("pitch", by_pitch), ("timing", by_timing)) if on]
-    if len(chosen) > 1:
-        console.print("Choose one of --rating, --pitch and --timing.")
+    if len(chosen) > 1 or (chosen and take):
+        console.print("Choose one of --rating, --pitch, --timing and --take.")
         raise typer.Exit(1)
     key = chosen[0] if chosen else None
     settings = config.load()
@@ -324,34 +327,40 @@ def play(
             raise typer.Exit(1)
         worst, best = min(rated, key=lambda r: r[:2]), max(rated, key=lambda r: r[:2])
         picks = [("worst", worst), ("best", best)] if len(rated) > 1 else [("only rated", worst)]
-        picks = [(f"{which} take by {'rating' if key == 'overall' else key}", number, take,
-                  f", {_score_text(r, key, references)}") for which, (_, number, take, r) in picks]
+        picks = [(f"{which} take by {'rating' if key == 'overall' else key} ({number} of {len(takes)})", t,
+                  f", {_score_text(r, key, references)}") for which, (_, number, t, r) in picks]
+    elif take:
+        _check_take(song, take, len(takes))
+        picks = [(f"take {take} of {len(takes)}", takes[take - 1], "")]
     else:
         if len(takes) == 1:
             console.print("[dim]Only one take so far.[/dim]")
-        picks = [("first take" if n == 1 else "latest take", n, takes[n - 1], "")
+        picks = [(f"{'first' if n == 1 else 'latest'} take ({n} of {len(takes)})", takes[n - 1], "")
                  for n in dict.fromkeys([1, len(takes)])]
 
-    for label, number, take, detail in picks:
-        console.print(f"[green]▶[/green] [bold]{escape(song)}[/bold], {label} ({number} of {len(takes)}), "
-                      f"recorded {_when(take.path)}{detail}")
-        if not player.play(take.path, console):
+    for label, t, detail in picks:
+        console.print(f"[green]▶[/green] [bold]{escape(song)}[/bold], {label}, recorded {_when(t.path)}{detail}")
+        if not player.play(t.path, console):
             break
 
 
 @app.command()
 def progress(
-    name: Annotated[str, typer.Argument(help="The song; part of its name is enough.")],
+    name: Annotated[list[str], typer.Argument(help="The song; part of its name is enough.", show_default=False)],
+    take: TakeOpt = None,
     library: LibraryOpt = None,
 ):
-    """Rate every take of a song, from first to latest."""
+    """Rate every take of a song, from first to latest; or show one take in detail."""
     settings = config.load()
     references = settings.references()
     songs = _existing_library(library, settings)
-    song = _find_song(songs, name)
+    song = _find_song(songs, " ".join(name))  # quoted or not
     if not songs.songs()[song]:
         console.print(f"“{escape(song)}” has no takes yet.")
         raise typer.Exit(1)
+    if take:
+        _show_take(songs, song, take, references)
+        return
     takes, ratings, reference = _rate_all(songs, song)
 
     table = Table("#", "Recorded", "Rating", "Pitch", "Timing", title=escape(song), title_justify="left")
@@ -390,6 +399,32 @@ def progress(
     else:
         console.print("[dim]Pitch: how close your held notes are to true notes. Timing: how steady your tempo is. "
                       "Scores are out of 10.[/dim]")
+    console.print(f"[dim]One take in detail: shed progress {escape(shlex.quote(song))} --take N[/dim]")
+
+
+def _check_take(song: str, number: int, count: int) -> None:
+    if number > count:
+        console.print(f"“{escape(song)}” has {count} take{'' if count == 1 else 's'}: "
+                      f"--take goes from 1 to {count}.")
+        raise typer.Exit(1)
+
+
+def _show_take(songs: Library, song: str, number: int, references: rating.References) -> None:
+    """One take's rating, and what stands out against the song's reference melody if it has one."""
+    reference = _reference(songs, song)
+    takes = songs.takes_of(song, melody=reference is not None)
+    _check_take(song, number, len(takes))
+    [take] = _rate(songs, [takes[number - 1]], with_melody=reference is not None)  # only this one, if need be
+    console.print(f"[bold]{escape(song)}[/bold], take {number} of {len(takes)}, recorded {_when(take.path)} "
+                  f"({_length(take.path)})")
+    rated = _rated(take.metrics, take.melody, reference)
+    console.print(_rating_line(rated, [], references))
+    if rated.comparison:
+        _melody_feedback(rated.comparison)
+    elif reference:
+        console.print("[dim]Too few lines of this take matched the reference, so its pitch is rated against the "
+                      "scale.[/dim]")
+    console.print(f"[dim]{escape(str(take.path))}[/dim]")
 
 
 @app.command()

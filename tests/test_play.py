@@ -89,10 +89,48 @@ def test_rating_by_one_metric(songs, flag, days):
     assert played() == days and f"by {flag.strip('-').replace('tempo', 'timing')}" in text(result)
 
 
-def test_one_rating_at_a_time(songs):
-    refused = play(songs, "harbor lights", "--pitch", "--timing")
-    assert refused.exit_code == 1 and "Choose one of --rating, --pitch and --timing" in text(refused)
+@pytest.mark.parametrize("flags", [["--pitch", "--timing"], ["--rating", "--take", "2"]])
+def test_one_way_to_pick_takes_at_a_time(songs, flags):
+    refused = play(songs, "harbor lights", *flags)
+    assert refused.exit_code == 1 and "Choose one of --rating, --pitch, --timing and --take" in text(refused)
     assert FakeAfplay.played == []
+
+
+def test_one_take_is_played(songs):
+    result = play(songs, "harbor lights", "--take", "2")
+    assert result.exit_code == 0, result.output
+    assert played() == ["14"] and "Harbor Lights, take 2 of 3, recorded 2026-06-14 20:00" in text(result)
+
+    too_far = play(songs, "harbor lights", "-t", "4")
+    assert too_far.exit_code == 1 and "“Harbor Lights” has 3 takes: --take goes from 1 to 3" in text(too_far)
+    assert played() == ["14"]
+
+
+def test_one_take_in_detail(songs):
+    result = CliRunner().invoke(cli.app, ["progress", "harbor", "lights", "--take", "3", "--library", str(songs.root)])
+
+    assert result.exit_code == 0, result.output
+    assert "Harbor Lights, take 3 of 3, recorded 2026-06-30 20:00" in text(result)
+    assert "Rated 6.8/10 · pitch 10.0/10 (10¢ off) · timing 2.0/10 (tempo ±5.0%)" in text(result)
+    assert "your best" not in text(result) and "Harbor Lights/2026-06-30_20-00.mp3" in text(result)
+
+
+def test_only_the_take_asked_for_is_rated(songs, monkeypatch):
+    import shutil
+
+    from woodshed import isolate
+
+    [first] = songs.songs()["Winter Town"]
+    shutil.copy(first, first.with_name("2026-06-02_20-00.mp3"))  # two unrated takes (ffmpeg can't run: Popen is faked)
+    rated = []
+    monkeypatch.setattr(isolate, "separate", lambda path: rated.append(path.name) or None)
+    monkeypatch.setattr(rating, "analyze", lambda stems, track=None: Metrics(18, 0.01))
+    monkeypatch.setattr(cli.models, "missing", lambda: [])
+
+    result = CliRunner().invoke(cli.app, ["progress", "winter", "-t", "2", "--library", str(songs.root)])
+
+    assert result.exit_code == 0, result.output
+    assert rated == ["2026-06-02_20-00.mp3"] and "Rated 8.6/10" in text(result)
 
 
 def test_progress_rates_older_takes_once(songs, monkeypatch):

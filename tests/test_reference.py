@@ -282,3 +282,19 @@ def test_the_original_is_picked_with_the_arrow_keys(online, monkeypatch, keys, d
     assert result.exit_code == 0, result.output
     assert [url for url, _ in online.downloaded] == downloaded
     assert online.library.has_reference("Harbor Lights") == bool(downloaded)
+
+
+def test_any_take_is_shown_against_the_melody(harbor, tone):
+    set_reference(harbor)
+    add_take(harbor.library, tone, "Harbor Lights", 2, 7, datetime(2026, 7, 1, 20, 0), LINES, metrics=Metrics(20, 0.02),
+             melody=sing())  # the latest: on the melody
+    harbor.melody = sing(flat_line=2)  # the first take, once its melody is followed
+
+    latest = harbor("progress", "harbor")
+    first = harbor("progress", "harbor", "--take", "1")
+
+    assert "Take 2 against the melody: No line strays 60¢ or more from the melody" in text(latest)
+    assert "One take in detail: shed progress 'Harbor Lights' --take N" in text(latest)
+    assert first.exit_code == 0, first.output
+    assert "Harbor Lights, take 1 of 2, recorded 2026-06-01 20:00" in text(first)
+    assert f"Furthest from the melody: 0:10 “{LINES[2]}” 100¢ under" in text(first)

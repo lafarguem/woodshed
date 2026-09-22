@@ -66,8 +66,8 @@ Answers go to `~/.config/woodshed/config.toml`, which only you can read. Run
 ```sh
 shed rec                    # record until you press a key
 shed rec --auto-stop 8      # …or until 8 s of silence
-shed rec --later            # only record, to record the next take right away…
 shed rec --m4a              # save this take as Apple Lossless (or --mp3), whatever `shed init` chose
+shed rec --later            # only record, to record the next take right away…
 shed add                    # …then file every take recorded that way
 shed add ~/Downloads/*.m4a  # file recordings you already have (voice memos: the date is kept)
 shed add ~/Downloads/Memos  # …or a whole folder: it picks out the songs (see below)
@@ -75,11 +75,13 @@ shed songs                  # every song, with take counts and dates
 shed songs harbor           # the takes of one song
 shed play harbor            # its first take, then its latest (any key skips)
 shed progress harbor        # every take's rating, first to latest
+shed progress harbor -t 3   # take 3 in detail: its rating, and the lines furthest from the melody
 shed play harbor --rating   # your worst take, then your best (or --pitch, --timing: on that alone)
+shed play harbor -t 3       # take 3 (--take 3)
 shed reference ~/Music/harbor-lights.mp3  # rate a song's pitch against the original's melody
 shed reference harbor       # …or find the original on YouTube (needs yt-dlp, see below)
 shed devices                # microphones you can record from, and how they're connected
-shed init                   # change the folder, microphone, token or rating strictness
+shed init                   # change the folder, format, microphone, token or how takes are rated
 ```
 
 Flags and environment variables override what `shed init` saved:
