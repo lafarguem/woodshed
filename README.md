@@ -57,8 +57,9 @@ arrow keys. Every question has a default, so pressing Enter all the way through 
 3. **A Genius access token** (optional) to recognize new songs. Create a free API client
    at https://genius.com/api-clients and click "Generate Access Token". The token is
    checked before it's saved.
-4. **How takes are rated** (optional): sliders for the reference points below, and for how much
-   pitch and timing each count in the rating, with a live preview of what example takes would score.
+4. **How takes are rated** (optional): sliders for the reference points below (for pitch against the
+   song's scale, and against a reference melody; for timing), and for how much pitch and timing each count
+   in the rating, with a live preview of what example takes would score.
    Changing them re-scores every take instantly.
 
 Answers go to `~/.config/woodshed/config.toml`, which only you can read. Run
@@ -79,7 +80,8 @@ shed songs                  # every song, with take counts and dates
 shed songs harbor           # the takes of one song
 shed play harbor            # its first take, then its latest (any key skips)
 shed progress harbor        # every take's rating, first to latest
-shed progress harbor -t 3   # take 3 in detail: its rating, and the lines furthest from the melody
+shed progress harbor -t 3   # take 3 in detail: its rating, and its best and worst lines against the melody
+shed progress harbor --lines  # each line of the song across your latest takes, against its melody
 shed play harbor --rating   # your worst take, then your best (or --pitch, --timing: on that alone)
 shed play harbor -t 3       # take 3 (--take 3)
 shed reference ~/Music/harbor-lights.mp3  # rate a song's pitch against the original's melody
@@ -110,8 +112,8 @@ still caught as soon as you stop, so a microphone that isn't allowed doesn't cos
 
 Run `shed serve` on the Mac, and open the page it shows on your phone, on the same Wi-Fi: scan its QR code,
 or type the link. Record there: each take is sent to the Mac as soon as you stop, and filed there. The page
-then shows how it went: the song, its rating, and the lines furthest from the melody if the song has a
-reference. When the song isn't clear, the page asks you which it is. Takes are filed one at a time, in the
+then shows how it went: the song, its rating, and the lines furthest from the melody and closest to it if the
+song has a reference. When the song isn't clear, the page asks you which it is. Takes are filed one at a time, in the
 order they arrive, so naming the first take of a new song lets the next ones be recognized.
 
 - `shed serve --later` only receives the takes: they wait to be filed by `shed add`, as `shed rec --later`
@@ -193,7 +195,7 @@ leans. Against the scale, takes rated before Woodshed measured the second only h
 reference melody, both are always there.
 
 The reference points are judgment calls, set so that professional recordings score about 9. Change
-them with `shed init` (or the `pitch_*` and `timing_*` keys in `config.toml`), along with pitch's
+them with `shed init` (or the `pitch_*`, `melody_*` and `timing_*` keys in `config.toml`), along with pitch's
 share of the rating (`pitch_weight_percent`). Scores are recomputed from each take's saved
 measurements, so nothing gets re-analyzed.
 
@@ -215,6 +217,8 @@ Your lines sit a little under the melody (about 40¢).
 Furthest from the melody:
   1:12  “and every bell was ringing out your name”  130¢ under
   0:31  “we counted ships until the evening fall”  85¢ over
+Closest to the melody:
+  0:12  “the lanterns swing above the harbor wall”  4¢ over
 ```
 
 **How it works:**
@@ -229,10 +233,10 @@ Furthest from the melody:
 4. Each note you hold on a matched word is compared with the note the reference sings on it, octaves
    aside, and nothing is capped: a note a semitone off counts as a semitone off. A line's offset is the
    median of its notes', and the rating goes by how far your lines typically are from the melody: 10/10 at
-   15¢, 0/10 at 100¢ (a semitone). Since a line's notes are pooled first, a line sung flat throughout
-   costs more than one whose notes stray either way.
-5. When most of your lines sit on the same side of the melody, you're told, and up to 3 lines 60¢ or more
-   off are pointed out, with when they start in the take.
+   15¢, 0/10 at 100¢ (a semitone), unless you choose otherwise in `shed init`. Since a line's notes are
+   pooled first, a line sung flat throughout costs more than one whose notes stray either way.
+5. When most of your lines sit on the same side of the melody, you're told. Up to 3 lines 60¢ or more off
+   are pointed out, with when they start in the take, and up to 3 lines within 20¢ of it.
 
 **How accurate it is:** so far, it's been tried on one song: 16 takes by an amateur, and two
 professional recordings.
@@ -254,8 +258,6 @@ professional recordings.
 - Takes filed before Woodshed kept melodies (v0.4.0 and earlier) have to be analyzed again, voice
   separated and lyrics transcribed: the first `progress` or `play --rating` after setting a reference
   does it, once.
-- The reference points for the melody (15¢ and 100¢) can't be changed yet; those in `shed init` are for
-  the scale.
 
 The song is recognized from the recording's lyrics, and you're asked to confirm it. You can also name it
 (`shed reference harbor ~/Music/harbor-lights.mp3`): if the lyrics don't match your takes of it, you're
@@ -274,6 +276,39 @@ https://www.youtube.com/watch?v=…`). The download is deleted as soon as its me
 yt-dlp isn't bundled with Woodshed because YouTube keeps changing, so it needs updating every few weeks
 (`brew upgrade yt-dlp`). Note that YouTube's terms don't allow downloading outside its own apps: whether to
 use this is up to you.
+
+### Your lines, take after take
+
+With a reference, `shed progress` also follows each line of the song through your latest takes (the last 8
+compared with the melody): the lines you're often off, and those you sing closest to it.
+
+```
+$ shed progress harbor
+…
+Line by line, your last 8 takes compared with the melody:
+Often off it:
+  “and every bell was ringing out your name”  typically 116¢ under · under in 7 of 8 takes
+  “we counted ships until the evening fall”  typically 94¢ over · over in 6 of 7 takes
+Closest to it:
+  “the lanterns swing above the harbor wall”  typically 24¢ off · within 20¢ in 2 of 7 takes
+```
+
+`shed progress harbor --lines` shows every line: how far from the melody it's typically sung, either way, and
+where, and how each take sang it. A line is said to be often off when it's typically 50¢ or more from the
+melody, and on that side in 7 of 10 of the takes that sang it; lines are only judged once 3 takes have sung them.
+
+Each line is compared with the melody moved to where the rest of its take sits. Whole takes move a lot from one
+to the next: a take sung a semitone under your guitar is told so as it's filed, and it doesn't put all its lines
+off here. On 16 takes of a song by an amateur, which sat anywhere from 274¢ under the melody to 24¢ over:
+- How far each line was from the melody itself didn't repeat between halves of the takes (a rank correlation of
+  0.08). How far it was from the rest of its take did (0.80, and 0.60 either way).
+- Split into halves of 8 (odd and even takes, or the first and last 8), the 3 lines pointed out in each half all
+  sat on the same side of the melody in the other half, and 8 of those 12 were pointed out there too.
+- A professional cover sang all its lines within 42¢ of the rest of it: none would be pointed out. It sang 3 of
+  the lines the amateur was often off, each within 17¢ of the rest: they were the amateur's, not the reference's.
+- The closest lines are less sure: 6 of the 12 were among the other half's closest, and 1 was even often off
+  there. That amateur sang 18% of their lines within 20¢ of where the rest of the take sat; the professional
+  cover, 68%.
 
 ## The library is just folders
 

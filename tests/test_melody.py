@@ -173,3 +173,87 @@ def test_notes_and_chords_are_read_from_the_take():
         assert np.argmax(heard) in PROGRESSION[n // 2 % 4]
     c = melody.compare(capo, reference)
     assert c.shift == 3 and c.typical == pytest.approx(0, abs=2)
+
+
+def lines_off(cents_by_line, **kwargs):
+    """A take on the melody, but for the lines given, sung that many cents off it."""
+    return sing(tune=[[note + cents_by_line.get(k, 0) / 100 for note in line] for k, line in enumerate(TUNE)], **kwargs)
+
+
+def test_the_lines_sung_are_placed_among_the_references():
+    take = sing(order=[3, 4, 5, 0, 1, 2, 0], flat_line=4)
+    c = melody.compare(take, REFERENCE)
+    assert [(s.line, round(s.cents)) for s in c.sung] == [(3, 0), (4, -100), (5, 0), (0, 0), (1, 0), (2, 0), (0, 0)]
+    starts = [next(w[1] for w in take.words if w[3] == n) for n in range(7)]
+    ends = [[w[2] for w in take.words if w[3] == n][-1] for n in range(7)]
+    assert [(s.start, s.end) for s in c.sung] == list(zip(starts, ends))
+
+
+def test_a_line_heard_as_two_of_the_references_is_split_between_them():
+    # Whisper hears the take's first two lines as one; the second of them is sung a semitone flat.
+    merged = sing(order=range(5), song=[f"{LINES[0]} {LINES[1]}", *LINES[2:]],
+                  tune=[TUNE[0] + [note - 1 for note in TUNE[1]], *TUNE[2:]])
+    c = melody.compare(merged, REFERENCE)
+    assert len(c.lines) == 5
+    assert [(s.line, round(s.cents)) for s in c.sung[:3]] == [(0, 0), (1, -100), (2, 0)]
+    assert c.sung[1].start == merged.words[len(words(LINES[0]))][1]  # the first word of the reference's 2nd line
+
+
+def test_the_lines_closest_to_the_melody_are_pointed_out_too():
+    c = melody.compare(lines_off({0: 30, 1: 12, 2: -5, 3: -100, 4: 40, 5: 18}), REFERENCE)
+    assert [(line.text, round(line.cents)) for line in melody.closest(c)] == [(LINES[2], -5), (LINES[1], 12),
+                                                                               (LINES[5], 18)]
+    assert [line.text for line in melody.furthest(c)] == [LINES[3]]
+    assert melody.closest(melody.compare(sing(off=-1.0), REFERENCE)) == []
+
+
+def test_across_takes_the_lines_off_take_after_take_stand_out_not_one_misread():
+    takes = [lines_off({2: -100, 4: 80}), lines_off({2: -90}), lines_off({2: -110, 0: 5}), lines_off({2: 30}),
+             sing(order=[0, 1, 3])]  # this one leaves out lines 2, 4 and 5
+    comparisons = [c for c in (melody.compare(take, REFERENCE) for take in takes) if c]
+    assert len(comparisons) == 5
+    histories = melody.history(comparisons, REFERENCE)
+
+    assert [h.text for h in histories] == LINES and [h.lines for h in histories] == [[n] for n in range(6)]
+    [flat] = melody.often_off(histories)
+    assert flat.text == LINES[2] and flat.cents == pytest.approx([-100, -90, -110, 30, None])
+    assert flat.typical == pytest.approx(-95) and (flat.same_side, flat.close) == (3, 0)
+    # Off in 1 of 4 (line 4): once is no pattern. On it every time: lines 0, 1, 3 and 5, in the song's order.
+    assert [h.text for h in melody.closest_across(histories)] == [LINES[0], LINES[1], LINES[3]]
+    assert len(melody.closest_across(histories, most=10)) == 5  # line 4 too: typically on it
+
+
+def test_a_take_sung_under_throughout_doesnt_put_all_its_lines_off():
+    # A semitone under the melody all through, and the fourth line a semitone further under.
+    comparisons = [melody.compare(lines_off({3: -100}, off=-1.0), REFERENCE) for _ in range(3)]
+    assert melody.sitting(comparisons[0]) == "Your lines sit about a semitone under the melody."
+    histories = melody.history(comparisons, REFERENCE)
+    [flat] = melody.often_off(histories)
+    assert flat.text == LINES[3] and flat.typical == pytest.approx(-100)
+    assert all(h.typical == pytest.approx(0) for h in histories if h is not flat)
+
+
+def test_a_line_off_either_way_isnt_pointed_out():
+    def off(*cents):
+        return melody.often_off(melody.history([melody.compare(lines_off({1: c}), REFERENCE) for c in cents],
+                                               REFERENCE))
+
+    assert off(-80, 90, -70, 100) == []  # typically on it
+    assert off(-80, -90, 60) == []  # under in 2 of 3: not enough
+    assert off(-80, -90, 60, -70) != []  # 3 of 4
+
+
+def test_a_line_sung_in_fewer_than_3_takes_isnt_judged():
+    comparisons = [melody.compare(lines_off({5: -100}), REFERENCE), melody.compare(lines_off({5: -100}), REFERENCE),
+                   melody.compare(sing(order=range(5)), REFERENCE)]
+    histories = melody.history(comparisons, REFERENCE)
+    assert histories[5].cents == pytest.approx([-100, -100, None])
+    assert melody.often_off(histories) == [] and histories[5] not in melody.closest_across(histories, most=10)
+
+
+def test_a_chorus_sung_the_same_each_time_is_one_line():
+    chorus = sing(order=[0, 1, 2, 0, 3])  # the reference sings its first line again, as a chorus would be
+    comparisons = [melody.compare(sing(order=[0, 1, 2, 0, 3], flat_line=0), chorus) for _ in range(3)]
+    histories = melody.history(comparisons, chorus)
+    assert [h.lines for h in histories] == [[0, 3], [1], [2], [4]]
+    assert histories[0].cents == pytest.approx([-100] * 3) and melody.often_off(histories) == [histories[0]]

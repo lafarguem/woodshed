@@ -68,12 +68,12 @@ def test_first_run_works_by_pressing_enter_at_every_question(setup, tmp_path, mo
 
 
 def test_running_init_again_keeps_previous_answers(setup, tmp_path):
-    setup(str(tmp_path / "lib"), "", "1", "y", "4", "30", "2", "8", "70", tokens=["good-token"])
+    setup(str(tmp_path / "lib"), "", "1", "y", "4", "30", "20", "90", "2", "8", "70", tokens=["good-token"])
     result = setup("", "", "", "", tokens=[""])  # Enter everywhere
 
     assert result.exit_code == 0, result.output
     assert config.load() == config.Config(str(tmp_path / "lib"), "Galaxy Buds2 Pro", "good-token", 4, 30, 2, 8,
-                                          pitch_weight_percent=70)
+                                          pitch_weight_percent=70, melody_best_cents=20, melody_worst_cents=90)
 
 
 def test_token_is_optional(setup, tmp_path):
@@ -83,12 +83,22 @@ def test_token_is_optional(setup, tmp_path):
 
 def test_rating_reference_points_can_be_changed(setup, tmp_path):
     # An inconsistent pitch range (10/10 above 0/10) is asked again.
-    result = setup(str(tmp_path), "", "", "y", "20", "10", "3", "15", "", "", "120", "80", tokens=[""])
+    result = setup(str(tmp_path), "", "", "y", "20", "10", "3", "15", "", "", "", "", "120", "80", tokens=[""])
     assert result.exit_code == 0, result.output
     assert "must be below the 0/10 value, and at most 50" in result.output and "Between 0 and 100" in result.output
     references = config.load().references()
     assert references.pitch_cents == (3, 15) and references.tempo_spread == (0.01, 0.06)  # timing kept
+    assert references.melody_cents == (15, 100)  # and the melody's
     assert references.pitch_weight == 0.8
+
+
+def test_the_melodys_reference_points_can_be_changed(setup, tmp_path):
+    # Up to two semitones (200¢) for 0/10.
+    result = setup(str(tmp_path), "", "", "y", "", "", "10", "300", "10", "60", "", "", "", tokens=[""])
+    assert result.exit_code == 0, result.output
+    assert "Pitch against a reference melody" in text(result) and "at most 200" in text(result)
+    references = config.load().references()
+    assert references.melody_cents == (10, 60) and references.pitch_cents == (12, 38)
 
 
 def test_a_hand_edited_inconsistent_range_is_refused(tmp_path, monkeypatch):
@@ -137,7 +147,7 @@ def test_init_starts_over_from_an_unreadable_config(setup, tmp_path):
 
 
 def test_an_endless_timing_range_is_asked_again(setup, tmp_path):
-    result = setup(str(tmp_path), "", "", "y", "", "", "1", "inf", "1", "8", "", tokens=[""])
+    result = setup(str(tmp_path), "", "", "y", "", "", "", "", "1", "inf", "1", "8", "", tokens=[""])
     assert result.exit_code == 0, result.output
     assert "at most 15" in text(result)
     assert config.load().references().tempo_spread == (0.01, 0.08)
@@ -148,6 +158,8 @@ def test_arrow_keys_pick_the_microphone_and_slide_the_ratings(setup, tmp_path):
             "down", "enter",  # "Adjust them"
             "left", "left", "enter",  # pitch 10/10 within 12¢ -> 10¢
             "enter",  # pitch 0/10 from 38¢, kept
+            "right", "enter",  # against a reference melody, 10/10 within 15¢ -> 16¢
+            "down", "enter",  # and 0/10 from 100¢ -> 75¢ (a big step)
             "right", "enter",  # timing 10/10 within ±1% -> ±1.5%
             "up", "enter",  # timing 0/10 from ±6% -> ±8.5% (a big step)
             "left", "left", "enter"]  # the rating: 60% pitch -> 50%
@@ -157,6 +169,7 @@ def test_arrow_keys_pick_the_microphone_and_slide_the_ratings(setup, tmp_path):
     saved = config.load()
     assert saved.device == "Galaxy Buds2 Pro"
     assert (saved.pitch_best_cents, saved.pitch_worst_cents) == (10, 38)
+    assert (saved.melody_best_cents, saved.melody_worst_cents) == (16, 75)
     assert (saved.timing_best_percent, saved.timing_worst_percent) == (1.5, 8.5)
     assert saved.pitch_weight_percent == 50
 

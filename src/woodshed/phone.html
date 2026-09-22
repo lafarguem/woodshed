@@ -37,6 +37,7 @@
   .take ul { list-style: none; padding: 0; margin: 6px 0 0; }
   .take li { margin: 4px 0; }
   .take li .off { color: var(--accent); white-space: nowrap; }
+  .take li .close { color: var(--ok); white-space: nowrap; }
   .take .choices { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
   .take .choices button, .take .choices input { font: inherit; padding: 9px 12px; border-radius: 9px;
                                                border: 1px solid var(--dim); background: var(--bg); color: var(--fg); }
@@ -255,15 +256,17 @@ function result(filed) {
   const parts = [element("div", filed.take ? `${filed.song} · take ${filed.take} of ${filed.of}` : filed.song, "song")];
   if (filed.rating) parts.push(element("div", filed.rating, "state"));
   for (const note of filed.notes) parts.push(element("div", note, "state dim"));
-  if (filed.furthest.length) {
-    parts.push(element("div", "Furthest from the melody:", "state"));
-    const lines = element("ul");
-    for (const line of filed.furthest) {
+  const listed = [["Furthest from the melody:", filed.furthest, "off"], ["Closest to the melody:", filed.closest, "close"]];
+  for (const [heading, lines, style] of listed) {
+    if (!lines || !lines.length) continue;
+    parts.push(element("div", heading, "state"));
+    const list = element("ul");
+    for (const line of lines) {
       const item = element("li");
-      item.append(element("span", `${line.time}  “${line.text}”  `), element("span", line.off, "off"));
-      lines.append(item);
+      item.append(element("span", `${line.time}  “${line.text}”  `), element("span", line.off, style));
+      list.append(item);
     }
-    parts.push(lines);
+    parts.push(list);
   }
   return parts;
 }

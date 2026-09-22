@@ -347,3 +347,19 @@ def test_the_phone_is_shown_the_lines_furthest_from_the_melody(shed, phone_take,
     assert result["rating"].startswith("Rated 3.2/10 · pitch 0.0/10 (100¢ off the melody)")
     assert result["notes"] == ["Your lines sit about a semitone under the melody."]
     assert result["furthest"][0] == {"time": "0:01", "text": LINES[0], "off": "100¢ under"}
+    assert result["closest"] == []  # none is close
+
+
+def test_the_phone_is_shown_the_lines_closest_to_the_melody_too(shed, phone_take, tone, rng):
+    from test_melody import LINES, lines_off, sing
+
+    add_take(shed.library, tone, "Harbor Lights", 2, 7, datetime(2026, 6, 1, 20, 0), LINES)
+    shed.library.set_reference("Harbor Lights", sing(), "original.mp3")
+    shed.heard, shed.melody = mishear(SONGS["Harbor Lights"], 0.2, rng), lines_off({0: 8, 3: -100})
+
+    phone_take.file()
+
+    result = phone_take.session.takes()[0]["result"]
+    assert [line["off"] for line in result["furthest"]] == ["100¢ under"]
+    assert result["closest"][0] == {"time": "0:05", "text": LINES[1], "off": "0¢"}
+    assert [line["text"] for line in result["closest"]] == [LINES[1], LINES[2], LINES[4]]  # at 0¢, and the first line 8¢ over

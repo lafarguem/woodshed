@@ -26,15 +26,21 @@ the rate at which lines get misread even when they're sung right.
 """
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
+
+from woodshed.lyrics import words as _words
 
 VERSION = 1  # bump when what's extracted changes, so that takes get re-analyzed
 
 MIN_NOTE_SECONDS = 0.1
 MIN_LINES = 3  # with fewer lines compared, the take's pitch is rated against the scale instead
 FAR_CENTS = 60  # lines this far from the melody are pointed out
+CLOSE_CENTS = 20  # and so are lines this close to it
+RECENT_TAKES = 8  # how the song's lines go is judged on the latest takes compared
+OFTEN_OFF_CENTS = 50  # a line typically this far from the melody in those takes is pointed out (see history())
+_MIN_TAKES = 3  # takes that sang a line before it's judged
 _WORD_SLACK = 0.15  # a note starting this close to a word (in seconds) is sung on it
 _SAME_WORD = 0.7  # how alike two words must be (difflib's ratio) to count as one, misheard or not
 _MIN_LINE_SCORE = 4  # lines matching less than that (about 3 words) aren't placed
@@ -76,12 +82,24 @@ class Line:
 
 
 @dataclass
+class Sung:
+    """One of the reference's lines, as sung in one of the take's lines. Whisper splits a take into lines its
+    own way, so one of its lines may hold the end of one of the reference's and the start of the next."""
+
+    line: int  # the reference's line
+    start: float  # when its first word matched starts in the take, in seconds
+    end: float  # when its last word matched ends
+    cents: float  # how far its notes are from the melody (the median): under it if negative
+
+
+@dataclass
 class Comparison:
     """A take against the song's reference melody."""
 
     shift: int  # semitones the take is played above the reference (0-11)
     by_instrument: bool  # the shift was read from the chords; a cappella, it's the key the voice fits best
     lines: list[Line]  # the lines compared, in the order sung
+    sung: list[Sung] = field(default_factory=list)  # the reference's lines compared, in the order sung
 
     @property
     def typical(self) -> float:
@@ -133,15 +151,16 @@ def compare(take: Melody, reference: Melody) -> Comparison | None:
     could be compared (not enough words matched, or notes held on them)."""
     pairs = align(take.words, reference.words)
     take_notes, reference_notes = _notes_on_words(take), _notes_on_words(reference)
-    compared = []  # (line, take note, reference note)
+    compared = []  # (take word, reference word, take note, reference note)
     for k, l in pairs:
         mine, theirs = take_notes[k], reference_notes[l]
         if mine and theirs:
             for p, note in enumerate(mine):  # in order, spread over the reference's notes on the word
-                compared.append((take.words[k][3], note, theirs[round(p * (len(theirs) - 1) / max(len(mine) - 1, 1))]))
+                compared.append((k, l, note, theirs[round(p * (len(theirs) - 1) / max(len(mine) - 1, 1))]))
     if not compared:
         return None
-    line_of, sung, meant = (np.array(column) for column in zip(*compared))
+    my_word, their_word, sung, meant = (np.array(column) for column in zip(*compared))
+    line_of = np.array([take.words[k][3] for k in my_word])
     pitch = np.array([note[2] for note in take.notes])[sung]
     target = np.round(np.array([note[2] for note in reference.notes]))[meant]
 
@@ -161,7 +180,16 @@ def compare(take: Melody, reference: Melody) -> Comparison | None:
         first_word.setdefault(word[3], word[1])
     lines = [Line(first_word[n], take.lines[n], float(np.median(off[line_of == n])))
              for n in np.unique(line_of) if np.sum(line_of == n) >= _MIN_LINE_NOTES]
-    return Comparison(shift, by_instrument, lines) if len(lines) >= MIN_LINES else None
+    if len(lines) < MIN_LINES:
+        return None
+    their_line = np.array([reference.words[l][3] for l in their_word])
+    passages = []
+    for n, r in {(int(n), int(r)): None for n, r in zip(line_of, their_line)}:  # in the order sung
+        here = (line_of == n) & (their_line == r)
+        if np.sum(here) >= _MIN_LINE_NOTES:
+            passages.append(Sung(r, take.words[my_word[here].min()][1], take.words[my_word[here].max()][2],
+                                 float(np.median(off[here]))))
+    return Comparison(shift, by_instrument, lines, passages)
 
 
 def align(take: list[tuple], reference: list[tuple]) -> list[tuple[int, int]]:
@@ -271,6 +299,89 @@ def furthest(comparison: Comparison, most: int = 3) -> list[Line]:
     """The lines furthest from the melody, furthest first."""
     far = [line for line in comparison.lines if abs(line.cents) >= FAR_CENTS]
     return sorted(far, key=lambda line: -abs(line.cents))[:most]
+
+
+def closest(comparison: Comparison, most: int = 3) -> list[Line]:
+    """The lines closest to the melody, closest first."""
+    close = [line for line in comparison.lines if abs(line.cents) <= CLOSE_CENTS]
+    return sorted(close, key=lambda line: abs(line.cents))[:most]
+
+
+@dataclass
+class History:
+    """One of the song's lines, across takes."""
+
+    text: str  # as heard in the reference
+    lines: list[int]  # the reference's lines with these words (a chorus sung the same each time is one line)
+    # Where each take sang it, oldest first (None: not compared), against the melody moved to where the rest of that
+    # take sits (see history()), in cents: under it if negative.
+    cents: list[float | None]
+
+    @property
+    def compared(self) -> list[float]:
+        return [c for c in self.cents if c is not None]
+
+    @property
+    def typical(self) -> float:
+        """Where it's typically sung (the median): under the melody if negative."""
+        return float(np.median(self.compared))
+
+    @property
+    def distance(self) -> float:
+        """How far from the melody it's typically sung, either way."""
+        return float(np.median(np.abs(self.compared)))
+
+    @property
+    def same_side(self) -> int:
+        """In how many takes it was sung on the side of the melody it typically sits on."""
+        return int(np.sum(np.sign(self.compared) == np.sign(self.typical)))
+
+    @property
+    def close(self) -> int:
+        """In how many takes it was sung within CLOSE_CENTS of the melody."""
+        return sum(abs(c) <= CLOSE_CENTS for c in self.compared)
+
+
+def history(comparisons: list[Comparison], reference: Melody) -> list[History]:
+    """Each of the reference's lines that any of the takes (oldest first) sang, in the reference's order, with where
+    each take sang it: the median of its notes on it (of those times, if it sings it more than once), from where the
+    take's lines typically sit (Comparison.where).
+
+    Whole takes move from one to the next: on 16 takes of a song by an amateur, from 274¢ under the melody to 24¢
+    over. Where each line was against the melody itself didn't repeat between halves of those takes (a rank
+    correlation of 0.08); against where the rest of its take sat, it did (0.80, and 0.60 either way). A take sung
+    under throughout is told so; here, it doesn't put all its lines off."""
+    key = {n: " ".join(_words(line)) for n, line in enumerate(reference.lines)}
+    by_key: dict[str, History] = {}
+    for n, line in enumerate(reference.lines):
+        by_key.setdefault(key[n], History(line, [], [None] * len(comparisons))).lines.append(n)
+    for t, comparison in enumerate(comparisons):
+        offsets: dict[str, list[float]] = {}
+        for passage in comparison.sung:
+            offsets.setdefault(key[passage.line], []).append(passage.cents)
+        for k, cents in offsets.items():
+            by_key[k].cents[t] = float(np.median(cents)) - comparison.where
+    return [h for h in by_key.values() if h.compared]
+
+
+def often_off(histories: list[History], most: int = 3) -> list[History]:
+    """The lines sung OFTEN_OFF_CENTS or more from the melody, typically, and on that side of it in 70% of the takes
+    that sang them (3 or more), furthest first. On those 16 takes, split in halves of 8 (odd and even, first and
+    last), the 3 lines pointed out in each half all sat on the same side of the melody in the other half, and 8 of
+    those 12 were pointed out there too."""
+    off = [h for h in histories if len(h.compared) >= _MIN_TAKES and abs(h.typical) >= OFTEN_OFF_CENTS
+           and h.same_side >= 0.7 * len(h.compared)]
+    return sorted(off, key=lambda h: -abs(h.typical))[:most]
+
+
+def closest_across(histories: list[History], most: int = 3) -> list[History]:
+    """The lines sung closest to the melody, either way, by the takes that sang them (3 or more), closest first:
+    those typically under OFTEN_OFF_CENTS from it, and not often off it. Less sure than often_off(): on those 16
+    takes, split as there, 6 of the 12 were among the other half's, and 1 was even often off there."""
+    off = often_off(histories, most=len(histories))
+    close = [h for h in histories if len(h.compared) >= _MIN_TAKES and h.distance < OFTEN_OFF_CENTS
+             and all(h is not o for o in off)]
+    return sorted(close, key=lambda h: h.distance)[:most]
 
 
 def _semitones(n: int) -> str:

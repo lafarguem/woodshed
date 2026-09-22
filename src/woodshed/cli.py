@@ -34,6 +34,7 @@ app = typer.Typer(help="Record your covers; Woodshed recognizes the song and fil
 console = Console()
 
 MIN_TAKE_SECONDS = 20
+MELODY_LIMIT = 200  # the most a reference melody's 0/10 point can be set to, in cents
 MIN_REFERENCE_WORDS = 20  # fewer words heard in a reference recording, and there's no melody to follow
 AUDIO_SUFFIXES = frozenset({".aac", ".aif", ".aifc", ".aiff", ".caf", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav"})
 GENIUS_CLIENTS_URL = "https://genius.com/api-clients"
@@ -83,6 +84,8 @@ def init():
     console.print("\n[bold]4. How should takes be rated?[/bold]")
     console.print(f"  Pitch:  10/10 at {settings.pitch_best_cents:g}¢ off or closer, 0/10 at {settings.pitch_worst_cents:g}¢ "
                   "(100¢ = a semitone; notes picked at random land around 38¢)")
+    console.print(f"          against a song's reference melody (shed reference): 10/10 at {settings.melody_best_cents:g}¢ "
+                  f"off or closer, 0/10 at {settings.melody_worst_cents:g}¢")
     console.print(f"  Timing: 10/10 at ±{settings.timing_best_percent:g}% tempo wobble or steadier, "
                   f"0/10 at ±{settings.timing_worst_percent:g}%")
     console.print(f"  Rating: {_shares(settings.pitch_weight_percent)}")
@@ -93,6 +96,9 @@ def init():
     elif Confirm.ask("Change them?", default=False):
         settings.pitch_best_cents, settings.pitch_worst_cents = _ask_range(
             "Pitch, in cents off the true note", settings.pitch_best_cents, settings.pitch_worst_cents, limit=50)
+        settings.melody_best_cents, settings.melody_worst_cents = _ask_range(
+            "Pitch against a reference melody, in cents off it", settings.melody_best_cents,
+            settings.melody_worst_cents, limit=MELODY_LIMIT)
         settings.timing_best_percent, settings.timing_worst_percent = _ask_range(
             "Timing, in ± % tempo wobble", settings.timing_best_percent, settings.timing_worst_percent, limit=15)
         settings.pitch_weight_percent = _ask_share(settings.pitch_weight_percent)
@@ -346,9 +352,11 @@ def play(
 def progress(
     name: Annotated[list[str], typer.Argument(help="The song; part of its name is enough.", show_default=False)],
     take: TakeOpt = None,
+    lines: Annotated[bool, typer.Option("--lines", help="How each line of the song went in your latest takes, "
+                                                        "against its reference melody.")] = False,
     library: LibraryOpt = None,
 ):
-    """Rate every take of a song, from first to latest; or show one take in detail."""
+    """Rate every take of a song, from first to latest; or show one take, or each line, in detail."""
     settings = config.load()
     references = settings.references()
     songs = _existing_library(library, settings)
@@ -356,8 +364,14 @@ def progress(
     if not songs.songs()[song]:
         console.print(f"“{escape(song)}” has no takes yet.")
         raise typer.Exit(1)
+    if take and lines:
+        console.print("Choose one of --take and --lines.")
+        raise typer.Exit(1)
     if take:
         _show_take(songs, song, take, references)
+        return
+    if lines:
+        _show_lines(songs, song, references)
         return
     takes, ratings, reference = _rate_all(songs, song)
 
@@ -385,11 +399,14 @@ def progress(
         best_number, best = max(overall, key=lambda o: (o[1], o[0]))
         console.print(f"Rating {_sparkline([score for _, score in overall])} {overall[0][1]:.1f} → "
                       f"{overall[-1][1]:.1f} since your first take; best {best:.1f} (take {best_number}).")
-    compared = [(n, r.comparison) for n, r in enumerate(ratings, 1) if r and r.comparison]
+    compared = _compared(takes, ratings)
     if compared:
-        number, comparison = compared[-1]
+        number, _, comparison = compared[-1]
         console.print(f"\n[bold]Take {number}[/bold] against the melody:")
         _melody_feedback(comparison)
+        if len(compared) > 1:
+            console.print()
+            _lines_summary(song, [c for _, _, c in compared], reference)
         console.print()
     if reference:
         console.print("[dim]Pitch: “off” is how far your lines typically are from the reference melody, either way "
@@ -445,6 +462,109 @@ def _show_take(songs: Library, song: str, number: int, references: rating.Refere
 def _lean(cents: float) -> str:
     """Where notes (or lines) typically sit: "40¢ under", "12¢ over" or "centered"."""
     return "centered" if abs(cents) < 0.5 else f"{abs(cents):.0f}¢ {'under' if cents < 0 else 'over'}"
+
+
+def _compared(takes: list[Take], ratings: list["Rated | None"]) -> list[tuple[int, Take, melody.Comparison]]:
+    """The latest takes compared with the song's reference melody (melody.RECENT_TAKES at most), oldest first,
+    with their numbers."""
+    return [(n, t, r.comparison) for n, (t, r) in enumerate(zip(takes, ratings), 1)
+            if r and r.comparison][-melody.RECENT_TAKES:]
+
+
+def _takes_compared(count: int) -> str:
+    return "your take compared" if count == 1 else f"your last {count} takes compared"
+
+
+def _typically(history: melody.History) -> str:
+    """Where a line is typically sung against the melody: "95¢ under", "12¢ over"."""
+    return "0¢" if round(history.typical) == 0 else _lean(history.typical)
+
+
+def _off_note(history: melody.History) -> str:
+    """How a line often off the melody is sung: "typically 95¢ under · under in 6 of 8 takes"."""
+    side = "under" if history.typical < 0 else "over"
+    return f"typically {_typically(history)} · {side} in {history.same_side} of {len(history.compared)} takes"
+
+
+def _close_note(history: melody.History) -> str:
+    """How one of the lines closest to the melody is sung: "typically 12¢ off · within 20¢ in 3 of 4 takes"."""
+    return (f"typically {history.distance:.0f}¢ off · within {melody.CLOSE_CENTS}¢ in {history.close} of "
+            f"{len(history.compared)} takes")
+
+
+LINES_AGAINST = ("Each line against the melody moved to where the rest of its take sits: a take sung under throughout "
+                 "is told so, and doesn't put all its lines off.")
+
+
+def _lines_summary(song: str, comparisons: list[melody.Comparison], reference: lib.Reference) -> None:
+    """The song's lines often off the melody in the latest takes, and those closest to it."""
+    histories = melody.history(comparisons, reference.melody)
+    off, close = melody.often_off(histories), melody.closest_across(histories)
+    console.print(f"[bold]Line by line[/bold], {_takes_compared(len(comparisons))} with the melody:")
+    if off:
+        console.print("Often off it:")
+        for h in off:
+            console.print(f"  “{escape(_shorten(h.text))}”  {_off_note(h)}")
+    else:
+        console.print("No line is often off it.")
+    if close:
+        console.print("Closest to it:")
+        for h in close:
+            console.print(f"  “{escape(_shorten(h.text))}”  {_close_note(h)}")
+    quoted = escape(shlex.quote(song))
+    console.print(f"[dim]{LINES_AGAINST} Every line: shed progress {quoted} --lines[/dim]")
+
+
+def _line_trend(history: melody.History, references: rating.References) -> str:
+    """How close to the melody each take sang a line, scored as pitch is (· where it wasn't compared)."""
+    return "".join("·" if cents is None else _sparkline([_melody_score(cents, references)]) for cents in history.cents)
+
+
+def _melody_score(cents: float, references: rating.References) -> float:
+    return rating.scores(rating.Metrics(None, None), references, melody_cents=abs(cents))["pitch"]
+
+
+def _song_compared(songs: Library, song: str) -> tuple[list[tuple[int, Take, melody.Comparison]], lib.Reference]:
+    """The song's latest takes compared with its reference melody (see _compared()), and the reference. Says why
+    and stops when there are none."""
+    if not songs.has_reference(song):
+        console.print(f"“{escape(song)}” has no reference recording, so there's no melody to follow its lines "
+                      f"against. Give it one: shed reference {escape(shlex.quote(song))}")
+        raise typer.Exit(1)
+    takes, ratings, reference = _rate_all(songs, song)
+    if reference is None:  # analyzed by an older version: _reference() said to set it again
+        raise typer.Exit(1)
+    compared = _compared(takes, ratings)
+    if not compared:
+        console.print(f"None of the takes of “{escape(song)}” could be compared with its reference melody: too few "
+                      "of their lines matched it.")
+        raise typer.Exit(1)
+    return compared, reference
+
+
+def _show_lines(songs: Library, song: str, references: rating.References) -> None:
+    """How each of the song's lines went in the latest takes compared with its reference melody."""
+    compared, reference = _song_compared(songs, song)
+    histories = melody.history([c for _, _, c in compared], reference.melody)
+    off = {id(h) for h in melody.often_off(histories, most=len(histories))}
+    close = {id(h) for h in melody.closest_across(histories)}
+    first, last = compared[0][0], compared[-1][0]
+    table = Table("Line", "Pitch", "Takes", "Take by take" if first == last else f"Takes {first}–{last}",
+                  title=f"{escape(song)}, line by line: {_takes_compared(len(compared))} with the melody",
+                  title_justify="left")
+    for h in histories:
+        pitch = f"{h.distance:.0f}¢ off · {_lean(h.typical)}"
+        if id(h) in off:
+            pitch = f"[yellow]{pitch}[/yellow]"
+        elif id(h) in close:
+            pitch = f"[green]{pitch}[/green]"
+        table.add_row(f"“{escape(_shorten(h.text, 44))}”", pitch, str(len(h.compared)), _line_trend(h, references))
+    console.print(table)
+    console.print(f"[dim]{LINES_AGAINST} Pitch: how far from it the takes that sang the line typically sang it, either "
+                  "way, and where they typically sang it, in cents (100¢ = a semitone). Once 3 takes have sung a line: "
+                  f"in yellow, the lines often off it ({melody.OFTEN_OFF_CENTS}¢ or more, on the same side in most "
+                  "takes), and in green, the 3 closest to it. Take by take: how close each take sang it, scored as pitch "
+                  "is, oldest first (· where it wasn't sung, or not heard).[/dim]")
 
 
 @app.command()
@@ -779,16 +899,18 @@ def _file_from_phone(raw: Path, songs: Library, settings: config.Config, session
 
 def _report(filed: Filed, references: rating.References) -> dict:
     """What the phone shows of a take once it's filed: what the terminal says, as plain text."""
-    result = {"song": filed.song or lib.UNSORTED, "take": filed.number, "of": filed.count, "notes": [], "furthest": []}
+    result = {"song": filed.song or lib.UNSORTED, "take": filed.number, "of": filed.count, "notes": [], "furthest": [],
+              "closest": []}
     if filed.rated is None:
         return result
     overall, details, compared = _rating_parts(filed.rated, filed.earlier, references)
     result["rating"] = UNRATED if overall is None else " · ".join(
         [f"Rated {overall:.1f}/10", *details, *([compared] if compared else [])])
     if comparison := filed.rated.comparison:
-        transposed, sitting, far = _melody_points(comparison)
+        transposed, sitting, far, close = _melody_points(comparison)
         result["notes"] = [note for note in (transposed, sitting) if note]
-        result["furthest"] = [{"time": _clock(line.start), "text": line.text, "off": _off(line)} for line in far]
+        result["furthest"], result["closest"] = (
+            [{"time": _clock(line.start), "text": line.text, "off": _off(line)} for line in lines] for lines in (far, close))
         if not sitting and not far:
             result["notes"].append(ALL_CLOSE)
     elif filed.reference:
@@ -959,31 +1081,36 @@ def _rating_line(rated: Rated, earlier: list[Rated], references: rating.Referenc
 ALL_CLOSE = f"No line strays {melody.FAR_CENTS}¢ or more from the melody."
 
 
-def _melody_points(comparison: melody.Comparison) -> tuple[str | None, str | None, list[melody.Line]]:
+def _melody_points(comparison: melody.Comparison,
+                   ) -> tuple[str | None, str | None, list[melody.Line], list[melody.Line]]:
     """What stands out in a take against the reference melody: your instrument's key, where your lines sit,
-    and the lines furthest from it."""
-    return melody.transposed(comparison), melody.sitting(comparison), melody.furthest(comparison)
+    and the lines furthest from it and closest to it."""
+    return (melody.transposed(comparison), melody.sitting(comparison), melody.furthest(comparison),
+            melody.closest(comparison))
 
 
 def _off(line: melody.Line) -> str:
+    if round(abs(line.cents)) == 0:
+        return "0¢"
     return f"{abs(line.cents):.0f}¢ {'under' if line.cents < 0 else 'over'}"
 
 
 def _melody_feedback(comparison: melody.Comparison, sitting: bool = True) -> None:
-    """_melody_points(), with when the lines furthest from the melody start in the take. Without `sitting`,
-    where the lines sit is left out (it's been said)."""
-    transposed, sits, far = _melody_points(comparison)
+    """_melody_points(), with when the lines furthest from the melody and closest to it start in the take.
+    Without `sitting`, where the lines sit is left out (it's been said)."""
+    transposed, sits, far, close = _melody_points(comparison)
     sits = sits if sitting else None
     if transposed:
         console.print(f"[dim]{transposed}[/dim]")
     if sits:
         console.print(sits)
-    if far:
-        console.print("Furthest from the melody:")
-        for line in far:
-            console.print(f"  {_clock(line.start)}  “{escape(_shorten(line.text))}”  {_off(line)}")
-    elif not sits:
+    if not far and not sits:
         console.print(ALL_CLOSE)
+    for heading, lines in (("Furthest from the melody:", far), ("Closest to the melody:", close)):
+        if lines:
+            console.print(heading)
+        for line in lines:
+            console.print(f"  {_clock(line.start)}  “{escape(_shorten(line.text))}”  {_off(line)}")
 
 
 def _clock(seconds: float) -> str:
@@ -1087,6 +1214,10 @@ def _slide_references(settings: config.Config) -> None:
     def pitch(best: float, worst: float) -> str:
         return "A take " + examples([15, 20, 25, 30], "{:g}¢ off", rating.References(pitch_cents=(best, worst)), "pitch")
 
+    def on_melody(best: float, worst: float) -> str:
+        references = rating.References(melody_cents=(best, worst))
+        return "A take " + "  ·  ".join(f"{v:g}¢ off → {_melody_score(v, references):.1f}" for v in (20, 40, 60, 80))
+
     def timing(best: float, worst: float) -> str:
         return "A take " + examples([1.5, 2.5, 4, 5], "±{:g}%", rating.References(tempo_spread=(best / 100, worst / 100)),
                                     "timing")
@@ -1097,6 +1228,12 @@ def _slide_references(settings: config.Config) -> None:
                                        s.pitch_worst_cents - 1, 1, cents, lambda v: pitch(v, s.pitch_worst_cents))
     s.pitch_worst_cents = widgets.slide(console, "  Pitch scores 0/10 from", s.pitch_worst_cents, s.pitch_best_cents + 1,
                                         50, 1, cents, lambda v: pitch(s.pitch_best_cents, v))
+    s.melody_best_cents = widgets.slide(console, "  Against a reference melody, pitch scores 10/10 within",
+                                        s.melody_best_cents, 0, s.melody_worst_cents - 5, 1, cents,
+                                        lambda v: on_melody(v, s.melody_worst_cents))
+    s.melody_worst_cents = widgets.slide(console, "  Against a reference melody, pitch scores 0/10 from",
+                                         s.melody_worst_cents, s.melody_best_cents + 5, MELODY_LIMIT, 5, cents,
+                                         lambda v: on_melody(s.melody_best_cents, v))
     s.timing_best_percent = widgets.slide(console, "  Timing scores 10/10 within", s.timing_best_percent, 0,
                                           s.timing_worst_percent - 0.5, 0.5, percent,
                                           lambda v: timing(v, s.timing_worst_percent))

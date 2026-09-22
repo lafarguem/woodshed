@@ -8,9 +8,9 @@ from datetime import datetime
 
 import pytest
 from conftest import SONGS, add_take, mishear, recording
-from test_melody import LINES, sing
+from test_melody import LINES, lines_off, sing
 
-from woodshed import cli, player, widgets, youtube
+from woodshed import cli, melody, player, widgets, youtube
 from woodshed.lyrics import words
 from woodshed.rating import Metrics
 
@@ -369,3 +369,67 @@ def test_you_pick_which_of_your_songs_it_is_with_the_arrow_keys(harbor, arrow_ke
     assert result.exit_code == 0, result.output
     assert "Number" not in result.output and harbor.library.has_reference("Harbor Lights") == kept
     assert ("You have no song called “nope”" in text(result)) == kept
+
+
+def test_a_take_is_told_its_lines_closest_to_the_melody_too(harbor, tmp_path, rng):
+    set_reference(harbor)
+    harbor.heard = mishear(SONGS["Harbor Lights"], 0.2, rng)
+    harbor.melody = lines_off({0: 30, 1: 12, 2: -5, 3: -100, 4: 40, 5: 18})
+    at = {n: cli._clock(next(w[1] for w in harbor.melody.words if w[3] == n)) for n in range(6)}
+
+    result = harbor("add", str(recording(tmp_path, "memo.m4a")))
+
+    assert result.exit_code == 0, result.output
+    assert (f"Furthest from the melody: {at[3]} “{LINES[3]}” 100¢ under Closest to the melody: {at[2]} “{LINES[2]}” "
+            f"5¢ under {at[1]} “{LINES[1]}” 12¢ over {at[5]} “{LINES[5]}” 18¢ over") in text(result)
+
+
+@pytest.fixture
+def practiced(harbor, tone):
+    """Harbor Lights with a reference, and four takes: the first (filed before Woodshed kept melodies) sings three
+    lines on the melody; the other three sing the third line flat, and one of them the fifth line sharp."""
+    set_reference(harbor)
+    for day, sung in ((2, lines_off({2: -100, 4: 80})), (3, lines_off({2: -90})), (4, lines_off({2: -110}))):
+        add_take(harbor.library, tone, "Harbor Lights", 2, 7, datetime(2026, 6, day, 20, 0), LINES,
+                 metrics=Metrics(20, 0.02), melody=sung)
+    harbor.melody = sing(order=[0, 1, 3])
+    return harbor
+
+
+def test_progress_tells_the_lines_off_take_after_take_and_those_on_the_melody(practiced):
+    result = practiced("progress", "harbor")
+
+    assert result.exit_code == 0, result.output
+    assert (f"Line by line, your last 4 takes compared with the melody: Often off it: “{LINES[2]}” typically 100¢ "
+            f"under · under in 3 of 3 takes Closest to it: “{LINES[0]}” typically 0¢ off · within 20¢ in 4 of 4 takes "
+            f"“{LINES[1]}” typically 0¢ off · within 20¢ in 4 of 4 takes “{LINES[3]}” typically 0¢ off") in text(result)
+    assert LINES[4] not in text(result).split("Line by line")[1]  # off once: no pattern
+    assert "Every line: shed progress 'Harbor Lights' --lines" in text(result)
+
+
+def test_lines_are_judged_on_the_latest_takes(practiced, monkeypatch):
+    monkeypatch.setattr(melody, "RECENT_TAKES", 3)
+    result = practiced("progress", "harbor")
+    assert "Line by line, your last 3 takes compared with the melody" in text(result)
+    assert f"“{LINES[0]}” typically 0¢ off · within 20¢ in 3 of 3 takes" in text(result)  # take 1 left out
+
+
+def test_every_line_in_detail(practiced):
+    result = practiced("progress", "harbor", "--lines")
+
+    assert result.exit_code == 0, result.output
+    assert "Harbor Lights, line by line: your last 4 takes compared with the melody" in text(result)
+    cells = {line: [cell.strip() for cell in row.split("│")[2:5]]  # each line's row, as the song goes
+             for row in result.output.splitlines() for line in LINES if row.startswith(f"│ “{line[:20]}")}
+    assert list(cells) == LINES
+    assert cells[LINES[2]] == ["100¢ off · 100¢ under", "3", "·▁▁▁"]  # take 1 didn't sing it
+    assert cells[LINES[4]] == ["0¢ off · centered", "3", "·▂██"]
+    assert cells[LINES[0]] == ["0¢ off · centered", "4", "████"]
+
+
+def test_lines_need_a_reference(harbor):
+    result = harbor("progress", "harbor", "--lines")
+    assert result.exit_code == 1 and "“Harbor Lights” has no reference recording, so there's no melody to follow " \
+                                      "its lines against. Give it one: shed reference 'Harbor Lights'" in text(result)
+    both = harbor("progress", "harbor", "--lines", "--take", "1")
+    assert both.exit_code == 1 and "Choose one of --take and --lines" in text(both)
