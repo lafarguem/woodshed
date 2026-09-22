@@ -25,8 +25,9 @@ jobs:
       - name: Keep the pitch model from one run to the next
         uses: actions/cache@v4
         with:
-          path: ~/.cache/huggingface/hub/models--lj1995--VoiceConversionWebUI
-          key: rmvpe
+          # The whole cache: a model's own folder only links to its files, kept in a store all models share.
+          path: ~/.cache/huggingface/hub
+          key: huggingface-rmvpe
 
       - name: Run the tests
         env:
