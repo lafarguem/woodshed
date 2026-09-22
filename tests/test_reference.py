@@ -2,13 +2,14 @@
 say. The models are faked (see `shed` in conftest.py), and the melodies made up note by note (test_melody.py)."""
 
 import json
+import shutil
 from datetime import datetime
 
 import pytest
 from conftest import SONGS, add_take, mishear, recording
 from test_melody import LINES, sing
 
-from woodshed import player
+from woodshed import player, youtube
 from woodshed.lyrics import words
 from woodshed.rating import Metrics
 
@@ -44,7 +45,8 @@ def test_a_reference_is_set_shown_and_removed(harbor):
 
     assert removed.exit_code == 0 and "“Harbor Lights” is rated against its scale again" in text(removed)
     assert "Reference" not in text(harbor("songs"))
-    assert "“Harbor Lights” is rated against its scale." in text(harbor("reference", "harbor"))
+    assert "“Harbor Lights” has no reference recording, so it's rated against its scale" \
+        in text(harbor("reference", "harbor"))
 
 
 def test_a_reference_is_only_for_a_song_you_have(harbor):
@@ -178,3 +180,88 @@ def test_a_reference_analyzed_by_an_older_version_is_set_again(harbor):
     assert result.exit_code == 0, result.output
     assert "was analyzed by an older version of Woodshed, so it's rated against its scale" in text(result)
     assert "shed reference 'Harbor Lights'" in text(result) and "20¢ off" in text(result)
+
+
+@pytest.fixture
+def online(harbor, tone, monkeypatch):
+    """YouTube, through a yt-dlp that finds two videos: `searched` and `downloaded` are what it was asked."""
+    harbor.searched, harbor.downloaded = [], []
+    videos = [youtube.Video("https://www.youtube.com/watch?v=a1", "Harbor Lights (Official Audio)", "The Originals", 201),
+              youtube.Video("https://www.youtube.com/watch?v=b2", "Harbor Lights (Live in Lisbon)", "A Fan", 355)]
+
+    def download(url, folder):
+        harbor.downloaded.append((url, folder))
+        shutil.copy(tone, folder / "original.wav")
+        return folder / "original.wav", "Harbor Lights (Official Audio)"
+
+    monkeypatch.setattr(youtube, "available", lambda: True)
+    monkeypatch.setattr(youtube, "search", lambda query: harbor.searched.append(query) or videos)
+    monkeypatch.setattr(youtube, "download", download)
+    harbor.melody = sing()
+    return harbor
+
+
+def test_the_original_is_found_on_youtube_for_a_song_without_a_reference(online):
+    result = online("reference", "harbor", input="\n1\n")  # Enter: yes, look; 1: the official audio
+
+    assert result.exit_code == 0, result.output
+    assert "has no reference recording, so it's rated against its scale. Look for the original on YouTube?" \
+        in text(result)
+    assert "1. Harbor Lights (Official Audio) · The Originals · 3:21 2. Harbor Lights (Live in Lisbon)" in text(result)
+    assert online.searched == ["Harbor Lights official audio"]
+    [(url, folder)] = online.downloaded
+    assert url == "https://www.youtube.com/watch?v=a1" and not folder.exists()  # the recording isn't kept
+    assert "“Harbor Lights” is now rated against the melody of Harbor Lights (Official Audio)" in text(result)
+    assert ("rated against the melody of Harbor Lights (Official Audio) (https://www.youtube.com/watch?v=a1)"
+            in text(online("reference", "harbor")))
+
+
+def test_nothing_is_downloaded_until_you_pick_a_video(online):
+    result = online("reference", "harbor", input="y\n7\n\n")  # 7 isn't one of them; Enter cancels
+
+    assert "Type a number from 1 to 2" in text(result) and "Nothing was changed" in text(result)
+    assert online.downloaded == [] and not online.library.has_reference("Harbor Lights")
+
+
+def test_a_search_replaces_a_reference_and_goes_by_the_songs_artist(online, tone):
+    set_reference(online)
+    add_take(online.library, tone, "Harbor Lights", 2, 7, datetime(2026, 6, 2, 20, 0), LINES, genius_id=7,
+             artist="The Originals")  # recognized on Genius
+
+    result = online("reference", "harbor", "--search", input="2\n")
+
+    assert result.exit_code == 0, result.output
+    assert online.searched == ["The Originals Harbor Lights official audio"]
+    assert online.library.reference("Harbor Lights").file == "https://www.youtube.com/watch?v=b2"
+
+
+def test_a_link_is_downloaded(online):
+    result = online("reference", "https://www.youtube.com/watch?v=zz", "harbor")
+
+    assert result.exit_code == 0, result.output
+    assert online.searched == [] and [url for url, _ in online.downloaded] == ["https://www.youtube.com/watch?v=zz"]
+
+
+def test_a_failed_download_is_reported(online, monkeypatch):
+    def fail(url, folder):
+        raise youtube.YouTubeError("[youtube] zz: Video unavailable")
+
+    monkeypatch.setattr(youtube, "download", fail)
+    result = online("reference", "harbor", "https://www.youtube.com/watch?v=zz")
+    assert result.exit_code == 1 and "Couldn't get it from YouTube: [youtube] zz: Video unavailable" in text(result)
+
+
+def test_without_yt_dlp_youre_told_how_to_get_it(harbor):
+    assert "Or install yt-dlp (brew install yt-dlp), to find the original on YouTube" in text(harbor("reference", "harbor"))
+    for args in (["--search"], ["https://www.youtube.com/watch?v=zz"]):
+        result = harbor("reference", "harbor", *args)
+        assert result.exit_code == 1 and "needs yt-dlp: brew install yt-dlp" in text(result)
+
+
+def test_a_new_songs_first_take_says_how_to_rate_it_on_the_melody(shed, tone, tmp_path, rng):
+    shed.heard = mishear(SONGS["Gravel Road"], 0.3, rng)
+    first = shed("add", str(tone), input="Gravel Road\n")
+    second = shed("add", str(recording(tmp_path, "memo.m4a")))
+
+    assert "To rate your pitch against the original's melody: shed reference 'Gravel Road'" in text(first)
+    assert "shed reference" not in text(second)

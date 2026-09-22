@@ -1,8 +1,10 @@
 """shed: record a cover, and Woodshed files it under the song's name."""
 
 import os
+import re
 import shlex
 import sys
+import tempfile
 from collections import Counter
 from contextlib import nullcontext
 from dataclasses import dataclass
@@ -18,7 +20,7 @@ from rich.markup import escape
 from rich.prompt import Confirm, FloatPrompt, IntPrompt, Prompt
 from rich.table import Table
 
-from woodshed import audio, config, genius, library as lib, melody, microphones, models, rating, widgets
+from woodshed import audio, config, genius, library as lib, melody, microphones, models, rating, widgets, youtube
 from woodshed.library import Library, Take
 
 # Recognition runs offline; `shed init` downloads the models it needs.
@@ -269,7 +271,7 @@ def list_songs(
             table.add_row(str(i), _when(path), _length(path))
         console.print(table)
         if reference := songs.reference(song):
-            console.print(f"Rated against the melody of {escape(reference.file)}.")
+            console.print(f"Rated against the melody of {escape(str(reference))}.")
         console.print(f"[dim]{escape(str(songs.root / song))}[/dim]")
         return
 
@@ -393,9 +395,11 @@ def progress(
 def reference(
     targets: Annotated[list[str], typer.Argument(
         metavar="[RECORDING] [SONG]", show_default=False,
-        help="A recording of one of your songs (e.g. the original), and the song (part of its name is enough). "
-             "Give only the recording and the song is recognized; only the song, and it says what it's rated "
-             "against.")],
+        help="A recording of one of your songs (e.g. the original), or a link to one (YouTube…), and the song (part "
+             "of its name is enough). Give only the recording and the song is recognized; only the song, and it says "
+             "what it's rated against (and offers to look for the original).")],
+    search: Annotated[bool, typer.Option("--search", help="Look for the original on YouTube, even if the song has a "
+                                                          "reference already. Needs yt-dlp: brew install yt-dlp")] = False,
     remove: Annotated[bool, typer.Option("--remove", help="Rate the song against its scale again.")] = False,
     library: LibraryOpt = None,
     language: LanguageOpt = None,
@@ -405,22 +409,21 @@ def reference(
     Your notes are then compared with the ones sung on the same words, in your
     instrument's key, and the lines furthest from the melody are pointed out.
     """
-    from woodshed import isolate, transcribe
-
-    files = [Path(t).expanduser() for t in targets if Path(t).expanduser().is_file()]
-    words = [t for t in targets if not Path(t).expanduser().is_file()]
+    links = [t for t in targets if re.match(r"https?://", t)]
+    files = [Path(t).expanduser() for t in targets if t not in links and Path(t).expanduser().is_file()]
+    words = [t for t in targets if t not in links and not Path(t).expanduser().is_file()]
     if missing := [t for t in words if "/" in t or Path(t).suffix.lower() in AUDIO_SUFFIXES]:  # song names have no "/"
         console.print(f"There's no recording at {escape(missing[0])}.")
         raise typer.Exit(1)
-    if len(files) > 1:
+    if len(files) + len(links) > 1:
         console.print("Give one recording at a time.")
         raise typer.Exit(1)
     name = " ".join(words) or None  # a song name left unquoted
-    recording = files[0] if files and not remove else None
-    settings = _settings() if recording else config.load()
+    recording, link = (files[0] if files else None), (links[0] if links else None)
+    settings = _settings() if (recording or link or search) and not remove else config.load()
     songs = _existing_library(library, settings)
     song = _find_song(songs, name) if name else None
-    if song is None and recording is None:
+    if song is None and not (recording or link):
         console.print("Name the song, e.g. shed reference harbor --remove")
         raise typer.Exit(1)
     if remove:
@@ -428,19 +431,77 @@ def reference(
         console.print(f"“{escape(song)}” is rated against its scale again." if had
                       else f"“{escape(song)}” has no reference melody.")
         return
-    if recording is None:
-        current = songs.reference(song)
-        if current is None:
-            console.print(f"“{escape(song)}” is rated against its scale. To rate it against a recording's melody: "
-                          f"shed reference {escape(shlex.quote(song))} <recording>")
-        else:
-            console.print(f"“{escape(song)}” is rated against the melody of {escape(current.file)} "
+    if not (recording or link or search):
+        if current := songs.reference(song):
+            console.print(f"“{escape(song)}” is rated against the melody of {escape(str(current))} "
                           f"(set {current.added:%Y-%m-%d}).")
             _reference(songs, song)  # says so if it needs setting again
-        return
+            return
+        console.print(f"“{escape(song)}” has no reference recording, so it's rated against its scale.")
+        if not youtube.available():
+            console.print(f"To rate it against the melody of the original: shed reference {escape(shlex.quote(song))} "
+                          "<recording>. Or install yt-dlp (brew install yt-dlp), to find the original on YouTube.")
+            return
+        if not Confirm.ask("Look for the original on YouTube?", default=True):
+            return
+        settings, search = _settings(), True
+    if (link or search) and not youtube.available():
+        console.print("Getting a recording from YouTube needs yt-dlp: brew install yt-dlp")
+        raise typer.Exit(1)
     if not songs.songs():
         console.print("You have no songs yet: a reference is for a song you've filed takes of.")
         raise typer.Exit(1)
+
+    with tempfile.TemporaryDirectory(prefix="woodshed-") as scratch:  # a download is deleted once it's analyzed
+        title = None
+        try:
+            if search and (link := _pick_original(song, songs)) is None:
+                console.print("Nothing was changed.")
+                return
+            if link:
+                with console.status("Downloading the recording…"):
+                    recording, title = youtube.download(link, Path(scratch))
+        except youtube.YouTubeError as e:
+            console.print(f"[red]Couldn't get it from YouTube: {escape(str(e))}[/red]")
+            raise typer.Exit(1)
+        sung = _follow_melody(recording, title or recording.name, language)
+    song = _reference_for(sung.lines, song, songs)
+    if song is None:
+        console.print("Nothing was changed.")
+        return
+    songs.set_reference(song, sung, link or _tilde(recording), title)
+    console.print(f"[green]✓[/green] “{escape(song)}” is now rated against the melody of "
+                  f"{escape(title or recording.name)} ({len(sung.lines)} lines heard).")
+    older = sum(t.melody is None for t in songs.takes_of(song, melody=True))
+    if older:
+        console.print(f"{older} of its takes {'was' if older == 1 else 'were'} filed before Woodshed kept their "
+                      "melody: `shed progress` analyzes them the first time (it takes a while).")
+    console.print(f"See how your takes compare: shed progress {escape(shlex.quote(song))}")
+
+
+def _pick_original(song: str, songs: Library) -> str | None:
+    """The link of the video you say is the song's original recording, among those YouTube finds for it."""
+    artist = next((t.artist for t in reversed(songs.takes_of(song)) if t.artist), None)
+    query = f"{artist} {song}" if artist else song
+    with console.status(f"Looking for “{escape(query)}” on YouTube…"):
+        videos = youtube.search(f"{query} official audio")
+    if not videos:
+        console.print(f"YouTube found nothing for “{escape(query)}”.")
+        return None
+    console.print("[bold]Which one is the original?[/bold] (a live or acoustic version has another melody)")
+    for i, video in enumerate(videos, 1):
+        length = f" · {_clock(video.seconds)}" if video.seconds else ""
+        console.print(f"  {i}. {escape(video.title)} [dim]· {escape(video.channel)}{length}[/dim]")
+    while answer := _input("Number to download, or Enter to cancel: ", []):
+        if answer.isdigit() and 1 <= int(answer) <= len(videos):
+            return videos[int(answer) - 1].url
+        console.print(f"Type a number from 1 to {len(videos)}.")
+    return None
+
+
+def _follow_melody(recording: Path, name: str, language: str | None) -> melody.Melody:
+    """A reference recording's melody (see melody.extract()); stops if there isn't enough singing to follow."""
+    from woodshed import isolate, transcribe
 
     try:
         with console.status("Listening to the recording…"):
@@ -451,30 +512,17 @@ def reference(
         with console.status("Separating the voice from the instruments…"):
             stems = isolate.separate(recording, start, end - start)
     except audio.AudioError as e:
-        console.print(f"[red]Can't read {escape(recording.name)}: {escape(str(e).splitlines()[-1] if str(e) else '')}"
-                      "[/red]")
+        console.print(f"[red]Can't read {escape(name)}: {escape(str(e).splitlines()[-1] if str(e) else '')}[/red]")
         raise typer.Exit(1)
     with console.status("Transcribing the lyrics…"):
         lines = transcribe.transcribe(stems.vocals_16k(), language)
     with console.status("Following the melody…"):
         sung = melody.extract(stems, lines, rating.pitch_track(stems))
     if len(sung.words) < MIN_REFERENCE_WORDS:
-        console.print(f"[red]Heard only {len(sung.words)} words sung in {escape(recording.name)}: too few to follow "
-                      "its melody.[/red]")
+        console.print(f"[red]Heard only {len(sung.words)} words sung in {escape(name)}: too few to follow its "
+                      "melody.[/red]")
         raise typer.Exit(1)
-
-    song = _reference_for(sung.lines, song, songs)
-    if song is None:
-        console.print("Nothing was changed.")
-        return
-    songs.set_reference(song, sung, _tilde(recording))
-    console.print(f"[green]✓[/green] “{escape(song)}” is now rated against the melody of "
-                  f"{escape(recording.name)} ({len(sung.lines)} lines heard).")
-    older = sum(t.melody is None for t in songs.takes_of(song, melody=True))
-    if older:
-        console.print(f"{older} of its takes {'was' if older == 1 else 'were'} filed before Woodshed kept their "
-                      "melody: `shed progress` analyzes them the first time (it takes a while).")
-    console.print(f"See how your takes compare: shed progress {escape(shlex.quote(song))}")
+    return sung
 
 
 def _reference_for(lines: list[str], named: str | None, songs: Library) -> str | None:
@@ -572,7 +620,7 @@ def _reference(songs: Library, song: str) -> lib.Reference | None:
     if reference and reference.melody is None:
         console.print(f"[yellow]The reference melody of “{escape(song)}” was analyzed by an older version of "
                       f"Woodshed, so it's rated against its scale. Set it again: shed reference "
-                      f"{escape(shlex.quote(song))} {escape(shlex.quote(reference.file))}[/yellow]")
+                      f"{escape(shlex.quote(song))} {escape(shlex.quote(reference.file))}[/yellow]")  # a file or a link
         return None
     return reference
 
@@ -952,6 +1000,10 @@ def _save(heard: Heard, choice: Choice, songs: Library, source: str | None = Non
         takes = songs.songs()[choice.song]
         number = f" (take {takes.index(dest) + 1} of {len(takes)})"
     console.print(f"[green]✓[/green] Saved [bold]{escape(str(dest.relative_to(songs.root)))}[/bold]{number}")
+    if choice.song and len(takes) == 1 and not songs.has_reference(choice.song):
+        how = "it can find the original on YouTube" if youtube.available() else "give it a recording of the original"
+        console.print(f"[dim]To rate your pitch against the original's melody: shed reference "
+                      f"{escape(shlex.quote(choice.song))} ({how}).[/dim]")
     if heard.metrics:
         rated = _rated(heard.metrics, heard.melody, reference)
         # Your best, among the takes rated the same way (on the melody, or on the scale).

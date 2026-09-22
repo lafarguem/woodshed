@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from typer.testing import CliRunner
 
-from woodshed import cli, config, isolate, melody, rating, transcribe
+from woodshed import cli, config, isolate, melody, rating, transcribe, youtube
 from woodshed.library import Library
 from woodshed.lyrics import words
 from woodshed.rating import Metrics
@@ -168,6 +168,7 @@ def shed(tmp_path, monkeypatch):
     monkeypatch.setattr(rating, "pitch_track", lambda stems: None)
     monkeypatch.setattr(rating, "analyze", lambda stems, track=None: shed.metrics)
     monkeypatch.setattr(melody, "extract", lambda stems, lines, track: shed.melody)
+    monkeypatch.setattr(youtube, "available", lambda: False)  # whether or not yt-dlp is installed here
 
     def sings(samples):  # hears singing in a low tone: 1 s of 16 kHz samples makes bin n n Hz
         shed.checked.append(1)

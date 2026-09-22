@@ -52,6 +52,7 @@ class Take:
     metrics: Metrics | None = None  # None until the take is rated
     source: str | None = None  # see fingerprint()
     melody: Melody | None = None  # None until it's needed (and read only when asked for: it's long)
+    artist: str | None = None  # the original's, when Genius recognized the song
 
 
 @dataclass
@@ -59,8 +60,12 @@ class Reference:
     """The recording a song's takes are rated against."""
 
     melody: Melody | None  # None if it was analyzed by an older version, so it needs setting again
-    file: str  # the recording, as it was given
+    file: str  # the recording, as it was given: a file, or a link it was downloaded from
     added: datetime
+    title: str | None = None  # a download's title
+
+    def __str__(self) -> str:
+        return f"{self.title} ({self.file})" if self.title else self.file
 
 
 class _Tags:
@@ -128,7 +133,8 @@ def _read(path: Path, song: str, melody: bool = False) -> Take:
     genius_id = tags[_GENIUS_ID]
     metrics = Metrics.from_json(tags[_METRICS]) if tags[_METRICS] else None
     return Take(path, song, tags[_TRANSCRIPT], int(genius_id) if genius_id.isdigit() else None, metrics,
-                tags[_SOURCE] or None, Melody.from_json(tags[_MELODY]) if melody and tags[_MELODY] else None)
+                tags[_SOURCE] or None, Melody.from_json(tags[_MELODY]) if melody and tags[_MELODY] else None,
+                tags[_ARTIST] or None)
 
 
 def fingerprint(path: Path) -> str:
@@ -222,12 +228,14 @@ class Library:
         try:
             data = json.loads((self.root / song / _REFERENCE).read_text())
             return Reference(Melody.from_json(json.dumps(data["melody"])), data["file"],
-                             datetime.fromisoformat(data["added"]))
+                             datetime.fromisoformat(data["added"]), data.get("title"))
         except (FileNotFoundError, ValueError, KeyError, TypeError):
             return None
 
-    def set_reference(self, song: str, melody: Melody, file: str) -> None:
+    def set_reference(self, song: str, melody: Melody, file: str, title: str | None = None) -> None:
         data = {"file": file, "added": f"{datetime.now():%Y-%m-%dT%H:%M}", "melody": json.loads(melody.to_json())}
+        if title:
+            data["title"] = title
         (self.root / song / _REFERENCE).write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")))
 
     def remove_reference(self, song: str) -> bool:

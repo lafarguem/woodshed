@@ -30,7 +30,8 @@ Rated 7.5/10 · pitch 7.3/10 (21¢ off) · timing 7.8/10 (tempo ±2.1%) · your 
    completes your song names). Press Enter to leave the take in `Unsorted/`.
 
 Everything runs on your Mac. Only step 4 goes online, and it sends only a few lyric
-lines.
+lines. The only other time Woodshed goes online is when you ask it to find a song's original on YouTube
+(see [Rating against the original melody](#rating-against-the-original-melody)).
 
 ## Setup
 
@@ -76,6 +77,7 @@ shed play harbor            # its first take, then its latest (any key skips)
 shed progress harbor        # every take's rating, first to latest
 shed play harbor --rating   # your worst take, then your best (or --pitch, --timing: on that alone)
 shed reference ~/Music/harbor-lights.mp3  # rate a song's pitch against the original's melody
+shed reference harbor       # …or find the original on YouTube (needs yt-dlp, see below)
 shed devices                # microphones you can record from, and how they're connected
 shed init                   # change the folder, microphone, token or rating strictness
 ```
@@ -225,6 +227,16 @@ The song is recognized from the recording's lyrics, and you're asked to confirm 
 (`shed reference harbor ~/Music/harbor-lights.mp3`): if the lyrics don't match your takes of it, you're
 told which song they sound like before anything is saved. `shed reference harbor` says what a song is rated
 against, and `shed reference harbor --remove` goes back to the scale.
+
+**Finding the original on YouTube.** If you've installed [yt-dlp](https://github.com/yt-dlp/yt-dlp)
+(`brew install yt-dlp`), `shed reference harbor` offers to look for the original when the song has none,
+and `--search` looks even when it has one. It searches for the artist (when Genius recognized the song)
+and the title, lists what it finds, and downloads only the video you pick: pick the studio version, since a
+live or acoustic one has another melody. You can also give it a link (`shed reference harbor
+https://www.youtube.com/watch?v=…`). The download is deleted as soon as its melody has been followed.
+yt-dlp isn't bundled with Woodshed because YouTube keeps changing, so it needs updating every few weeks
+(`brew upgrade yt-dlp`). Note that YouTube's terms don't allow downloading outside its own apps: whether to
+use this is up to you.
 
 ## The library is just folders
 
