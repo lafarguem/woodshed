@@ -226,6 +226,11 @@ class Library:
     def save_melody(self, path: Path, melody: Melody) -> None:
         self._save_tag(path, _MELODY, melody.to_json())
 
+    def save_artist(self, song: str, artist: str) -> None:
+        """Who sings the song's original, on each of its takes."""
+        for path in self.songs().get(song, []):
+            self._save_tag(path, _ARTIST, artist)
+
     def _save_tag(self, path: Path, desc: str, text: str) -> None:
         tags = _Tags(path)
         tags[desc] = text

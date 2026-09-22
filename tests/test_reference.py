@@ -238,6 +238,60 @@ def test_a_search_replaces_a_reference_and_goes_by_the_songs_artist(online, tone
     assert online.library.reference("Harbor Lights").file == "https://www.youtube.com/watch?v=b2"
 
 
+@pytest.fixture
+def covered(online, tone):
+    """Harbor Lights, as Genius once recognized it: as a cover's."""
+    add_take(online.library, tone, "Harbor Lights", 2, 7, datetime(2026, 6, 2, 20, 0), LINES, genius_id=9,
+             artist="Some Cover Singer")
+    return online
+
+
+def test_you_can_look_again_with_the_real_artist_who_is_then_kept(covered):
+    result = covered("reference", "harbor", "--search", input="The Originals\n1\n")
+
+    assert result.exit_code == 0, result.output
+    assert "Number to download, an artist to search for instead, or Enter to cancel" in text(result)
+    assert covered.searched == ["Some Cover Singer Harbor Lights official audio",
+                                "The Originals Harbor Lights official audio"]
+    assert "Saved The Originals as the artist of “Harbor Lights”" in text(result)
+    assert [take.artist for take in covered.library.takes_of("Harbor Lights")] == ["The Originals"] * 2
+    assert covered.library.reference("Harbor Lights").file == "https://www.youtube.com/watch?v=a1"
+
+
+def test_an_artist_is_only_kept_once_you_pick_a_video_it_found(covered):
+    result = covered("reference", "harbor", "--search", input="The Originals\n\n")  # Enter: none of these
+
+    assert result.exit_code == 0, result.output
+    assert len(covered.searched) == 2 and covered.downloaded == [] and "Nothing was changed" in text(result)
+    assert covered.library.takes_of("Harbor Lights")[-1].artist == "Some Cover Singer"
+
+
+def test_you_can_look_again_with_the_arrow_keys(covered, monkeypatch):
+    presses = iter(["up", "up", "enter", "enter"])  # up twice from the first: "Search again with another artist…"
+    monkeypatch.setattr(cli, "_interactive", lambda: True)
+    monkeypatch.setattr(widgets.terminal, "keys", lambda: contextlib.nullcontext(lambda: next(presses)))
+
+    result = covered("reference", "harbor", "--search", input="The Originals\n")
+
+    assert result.exit_code == 0, result.output
+    assert covered.searched[-1] == "The Originals Harbor Lights official audio"
+    assert [url for url, _ in covered.downloaded] == ["https://www.youtube.com/watch?v=a1"]
+    assert covered.library.takes_of("Harbor Lights")[-1].artist == "The Originals"
+
+
+def test_when_youtube_finds_nothing_you_can_name_the_artist(online, monkeypatch):
+    search = youtube.search
+    monkeypatch.setattr(youtube, "search", lambda query: search(query) if "The Originals" in query else [])
+
+    result = online("reference", "harbor", "--search", input="The Originals\n1\n")
+
+    assert result.exit_code == 0, result.output
+    assert "YouTube found nothing for “Harbor Lights”. Another artist to search for, or Enter to cancel" \
+        in text(result)
+    assert online.library.takes_of("Harbor Lights")[0].artist == "The Originals"  # it had none
+    assert online.library.has_reference("Harbor Lights")
+
+
 def test_a_link_is_downloaded(online):
     result = online("reference", "https://www.youtube.com/watch?v=zz", "harbor")
 

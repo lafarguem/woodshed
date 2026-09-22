@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 import sounddevice as sd
 from conftest import SONGS, add_take, mishear, recording
+from test_genius import hit, linked
 
 from woodshed import audio, config, genius, isolate, recorder, transcribe
 from woodshed.rating import Metrics
@@ -24,10 +25,9 @@ def mic(monkeypatch):
     return mic
 
 
-def genius_finds(monkeypatch, title, genius_id):
+def genius_finds(monkeypatch, title, genius_id, artist="The Originals"):
     monkeypatch.setenv("GENIUS_ACCESS_TOKEN", "token")
-    monkeypatch.setattr(genius, "search", lambda query, token: [
-        {"title": title, "primary_artist": {"name": "The Originals"}, "id": genius_id}])
+    monkeypatch.setattr(genius, "search", lambda query, token: [hit(title, artist, genius_id)])
 
 
 def text(result):
@@ -75,6 +75,19 @@ def test_a_new_song_is_recognized_on_genius_brackets_and_all(shed, tone, rng, mo
     [take] = shed.library.takes_of("Gravel Road [sped up]")
     assert take.genius_id == 42
     assert "Gravel Road [sped up]" in shed("songs").output
+
+
+def test_a_song_genius_finds_as_a_cover_is_filed_as_the_originals(shed, tone, rng, monkeypatch, genius_pages):
+    genius_finds(monkeypatch, "Gravel Road", 42, artist="A Cover Singer")
+    genius_pages[42] = linked("cover_of", hit("Gravel Road", "The Originals", 7))
+    shed.heard = mishear(SONGS["Gravel Road"], 0.0, rng)
+
+    result = shed("add", str(tone))
+
+    assert result.exit_code == 0, result.output
+    assert "Recognized Gravel Road by The Originals on Genius" in text(result)
+    [take] = shed.library.takes_of("Gravel Road")
+    assert (take.artist, take.genius_id) == ("The Originals", 7)
 
 
 @pytest.mark.parametrize("answer, folder", [
