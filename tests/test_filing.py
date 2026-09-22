@@ -390,3 +390,35 @@ def test_a_take_can_be_saved_in_another_format_than_usual(shed, mic, tmp_path, r
     config.save(config.Config(library=str(shed.library.root), take_format="m4a"))
     rec("--mp3")
     assert shed.library.songs()["Gravel Road"][-1].suffix == ".mp3"
+
+
+@pytest.mark.parametrize("keys, typed, folder", [
+    (["enter"], "", "Night River"),  # Genius's guess comes first
+    (["down", "enter"], "kitchen floor\n", "Kitchen Floor"),  # another song: one of yours, however it's typed
+    (["down", "enter"], "Winter Town\n", "Winter Town"),  # or a new one
+    (["down", "enter", "down", "down", "enter"], "\n", "Unsorted"),  # typing nothing goes back to the list
+])
+def test_you_pick_the_song_with_the_arrow_keys(shed, tone, monkeypatch, arrow_keys, keys, typed, folder):
+    add_take(shed.library, tone, "Kitchen Floor", 2, 7, datetime(2020, 6, 2, 20, 0), [SONGS["Kitchen Floor"]])
+    genius_finds(monkeypatch, "Night River", 7)
+    shed.heard = ["we drove along the river in the rain tonight"]
+    arrow_keys(*keys)
+
+    result = shed("add", str(tone), input=typed)
+
+    assert result.exit_code == 0, result.output
+    assert "Number" not in result.output and "Skip it" not in result.output  # a file named is always filed
+    filed = shed.library.unsorted() if folder == "Unsorted" else shed.library.songs()[folder]
+    assert len(filed) == (2 if folder == "Kitchen Floor" else 1)
+
+
+def test_a_recording_from_a_folder_can_be_skipped_with_the_arrow_keys(shed, tmp_path, arrow_keys):
+    memos = tmp_path / "memos"
+    recording(memos, "Standard recording 1.m4a")
+    shed.heard = ["la la la la"]
+    arrow_keys("up", "enter")  # up from the first: the last, "Skip it"
+
+    result = shed("add", str(memos))
+
+    assert result.exit_code == 0, result.output
+    assert "you skipped it (1)" in text(result) and shed.library.unsorted() == [] and shed.library.songs() == {}

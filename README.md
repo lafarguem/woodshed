@@ -28,8 +28,8 @@ Rated 7.5/10 · pitch 7.3/10 (21¢ off) · timing 7.8/10 (tempo ±2.1%) · your 
    Genius. If the same song comes up first more than once, it's filed under that title. Covers of a song
    share its title, and Genius often lists one first: when Genius links what it found to an original of the
    same title (a cover, or a live version), the take is filed as the original artist's song.
-5. **You:** otherwise you're shown the best guesses and pick one or type a name (Tab
-   completes your song names). Press Enter to leave the take in `Unsorted/`.
+5. **You:** otherwise you pick one of the best guesses with the arrow keys, or another song, whose
+   name you type (Tab completes your song names), or leave the take in `Unsorted/`.
 
 Everything runs on your Mac. Only step 4 goes online, and it sends only a few lyric
 lines, then the Genius id of the song they found, to ask whether it's a cover. The only other time Woodshed
@@ -138,8 +138,8 @@ Give `shed add` a folder of old recordings, and it files the songs in it:
    recordings, are left out.
 2. **The songs are recognized as usual,** oldest first, so each take filed helps recognize the later
    ones.
-3. **The ones it can't name are kept for the end,** one question each. Enter files a take in
-   `Unsorted/`, and `-` skips it.
+3. **The ones it can't name are kept for the end,** one question each. There, you can also skip a
+   recording: it isn't filed, nor asked about again.
 
 Run `shed add --dry-run <folder>` first to see what it would file and skip. Recordings already filed
 or skipped are remembered, so adding the folder again only looks at the new ones. A file named on

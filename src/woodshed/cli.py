@@ -602,6 +602,15 @@ def _reference_for(lines: list[str], named: str | None, songs: Library) -> str |
         return likeliest
     options = [song for song, score in ranked[:3] if score > 0.03 and song != likeliest]
     console.print("[bold]Which of your songs is it?[/bold]")
+    while _interactive():
+        chosen = widgets.pick(console, options + ["Another of your songs…", "Cancel"], 0,
+                              [""] * len(options) + ["type its name (Tab completes)", ""])
+        if chosen != len(options):
+            return options[chosen] if chosen < len(options) else None
+        if (name := _input("Song name (Enter to go back): ", list(songs.songs()))) and (song := _song_named(songs, name)):
+            return song
+        if name:
+            console.print(f"You have no song called “{escape(name)}”.")
     for i, option in enumerate(options, 1):
         console.print(f"  {i}. {escape(option)}")
     while answer := _input("Number, song name (Tab completes), or Enter to cancel: ", list(songs.songs())):
@@ -1333,6 +1342,8 @@ def _ask(ranked: list[tuple[str, float]], suggestion: genius.Candidate | None, s
     """Which song this is, as you answer. None when `can_skip` and you skip it."""
     options = _song_options(ranked, suggestion, songs)
     console.print("[bold]Which song is this?[/bold]")
+    if _interactive():
+        return _pick_song(options, songs, can_skip)
     for i, (_, name, where) in enumerate(options, 1):
         console.print(f"  {i}. {escape(name)} [dim]({where})[/dim]")
     answer = _input("Number, song name (Tab completes), " + ("Enter for Unsorted, or - to skip it: " if can_skip
@@ -1342,6 +1353,21 @@ def _ask(ranked: list[tuple[str, float]], suggestion: genius.Candidate | None, s
     if answer.isdigit() and 1 <= int(answer) <= len(options):
         return options[int(answer) - 1][0]
     return _choice_named(answer, songs)
+
+
+def _pick_song(options: list[tuple[Choice, str, str]], songs: Library, can_skip: bool) -> Choice | None:
+    """_ask()'s question, answered with the arrow keys."""
+    labels = [name for _, name, _ in options] + ["Another song…", lib.UNSORTED] + (["Skip it"] if can_skip else [])
+    notes = [where for _, _, where in options] + ["type its name (Tab completes)", "", "and don't ask again"]
+    while True:
+        chosen = widgets.pick(console, labels, 0, notes[:len(labels)])
+        if chosen < len(options):
+            return options[chosen][0]
+        if chosen == len(options):  # another song
+            if name := _input("Song name (Enter to go back): ", list(songs.songs())):
+                return _choice_named(name, songs)
+            continue
+        return Choice(None) if chosen == len(options) + 1 else None  # Unsorted, or skipped
 
 
 def _song_options(ranked: list[tuple[str, float]], suggestion: genius.Candidate | None, songs: Library,

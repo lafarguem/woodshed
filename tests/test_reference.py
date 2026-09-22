@@ -352,3 +352,18 @@ def test_any_take_is_shown_against_the_melody(harbor, tone):
     assert first.exit_code == 0, first.output
     assert "Harbor Lights, take 1 of 2, recorded 2026-06-01 20:00" in text(first)
     assert f"Furthest from the melody: 0:10 “{LINES[2]}” 100¢ under" in text(first)
+
+
+@pytest.mark.parametrize("keys, typed, kept", [
+    (["enter", "enter"], "nope\nharbor\n", True),  # "Another of your songs…", twice: no song called "nope"
+    (["down", "enter"], "", False),  # "Cancel"
+])
+def test_you_pick_which_of_your_songs_it_is_with_the_arrow_keys(harbor, arrow_keys, keys, typed, kept):
+    harbor.melody = verse_of("Winter Town")  # not a song you have: it isn't recognized
+    arrow_keys(*keys)
+
+    result = harbor("reference", str(harbor.original), input=typed)
+
+    assert result.exit_code == 0, result.output
+    assert "Number" not in result.output and harbor.library.has_reference("Harbor Lights") == kept
+    assert ("You have no song called “nope”" in text(result)) == kept

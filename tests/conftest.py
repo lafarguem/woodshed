@@ -1,3 +1,4 @@
+import contextlib
 import random
 import subprocess
 from types import SimpleNamespace
@@ -6,7 +7,7 @@ import numpy as np
 import pytest
 from typer.testing import CliRunner
 
-from woodshed import cli, config, genius, isolate, melody, rating, transcribe, youtube
+from woodshed import cli, config, genius, isolate, melody, rating, transcribe, widgets, youtube
 from woodshed.library import Library
 from woodshed.lyrics import words
 from woodshed.rating import Metrics
@@ -201,3 +202,13 @@ def recording(folder, name, seconds=25, hz=196, when=None):
 def add_take(library, src, song, start, end, recorded, lines, **tags):
     """File the part of `src` from `start` to `end` (seconds) as a take, as `shed add` does."""
     return library.add_take(library.encode(src, start, end), song, recorded, lines, **tags)
+
+
+@pytest.fixture
+def arrow_keys(monkeypatch):
+    """Makes the pickers show up, as in a terminal: arrow_keys("down", "enter") answers them with those keys."""
+    def press(*keys):
+        presses = iter(keys)
+        monkeypatch.setattr(cli, "_interactive", lambda: True)
+        monkeypatch.setattr(widgets.terminal, "keys", lambda: contextlib.nullcontext(lambda: next(presses)))
+    return press
