@@ -16,6 +16,7 @@ DEVICES = [
 
 @pytest.fixture
 def setup(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))  # the default library, never yours
     monkeypatch.setattr(config, "PATH", tmp_path / "config" / "config.toml")
     monkeypatch.setattr(sd, "query_devices", lambda device=None, kind=None: DEVICES if device is None else DEVICES[device])
     monkeypatch.setattr(sd.default, "device", [0, 1])  # earbuds are the system default
@@ -205,3 +206,67 @@ def test_a_take_format_typed_by_hand_is_refused(tmp_path, monkeypatch):
     monkeypatch.setattr(cli.models, "missing", lambda: [])
     result = CliRunner().invoke(cli.app, ["add", str(tmp_path)])
     assert result.exit_code == 1 and "must be mp3 or m4a" in " ".join(result.output.split())
+
+
+@pytest.fixture
+def library(tmp_path):
+    """A library with a song, its reference, a take waiting to be filed, and Finder's .DS_Store."""
+    old = tmp_path / "Woodshed"
+    (old / "Harbor Lights").mkdir(parents=True)
+    (old / "Harbor Lights" / "2026-06-01_20-00.mp3").write_bytes(b"take")
+    (old / "Harbor Lights" / ".reference.json").write_text("{}")
+    (old / ".incoming").mkdir()
+    (old / ".incoming" / "raw.wav").write_bytes(b"raw")
+    (old / ".DS_Store").write_bytes(b"")
+    config.PATH.parent.mkdir(parents=True, exist_ok=True)
+    config.save(config.Config(str(old)))
+    return old
+
+
+def test_changing_folder_moves_the_recordings_when_asked(setup, library, tmp_path):
+    new = tmp_path / "Elsewhere" / "Woodshed"
+    result = setup(str(new), "y", "", "", "", tokens=[""])
+
+    assert result.exit_code == 0, result.output
+    said = " ".join(result.output.split())
+    assert "Left there, Woodshed won't see them" in said and "Moved your recordings to" in said
+    assert (new / "Harbor Lights" / "2026-06-01_20-00.mp3").read_bytes() == b"take"
+    assert (new / "Harbor Lights" / ".reference.json").exists() and (new / ".incoming" / "raw.wav").exists()
+    assert not library.exists()  # emptied, Finder's .DS_Store included
+    assert config.load().library == str(new)
+
+
+def test_the_recordings_can_be_left_where_they_are(setup, library, tmp_path):
+    new = tmp_path / "Fresh"
+    result = setup(str(new), "n", "", "", "", tokens=[""])
+
+    assert result.exit_code == 0, result.output
+    assert (library / "Harbor Lights" / "2026-06-01_20-00.mp3").exists() and list(new.iterdir()) == []
+    assert config.load().library == str(new)
+
+
+def test_recordings_arent_moved_over_a_song_already_there(setup, library, tmp_path):
+    new = tmp_path / "Other"
+    (new / "Harbor Lights").mkdir(parents=True)
+    result = setup(str(new), "", "", "", tokens=[""])  # not asked
+
+    assert result.exit_code == 0, result.output
+    assert "already has Harbor Lights" in " ".join(result.output.split())
+    assert (library / "Harbor Lights" / "2026-06-01_20-00.mp3").exists()
+    assert list((new / "Harbor Lights").iterdir()) == []
+
+
+def test_keeping_the_same_folder_asks_nothing(setup, library):
+    result = setup("", "", "", "", tokens=[""])
+
+    assert result.exit_code == 0, result.output
+    assert "Move them" not in result.output and (library / "Harbor Lights").is_dir()
+
+
+def test_arrow_keys_pick_whether_to_move(setup, library, tmp_path):
+    new = tmp_path / "Moved"
+    # Enter: move them; then the format, the microphone and the ratings, each kept
+    result = setup(str(new), keys=["enter", "enter", "enter", "enter"], tokens=[""])
+
+    assert result.exit_code == 0, result.output
+    assert (new / "Harbor Lights").is_dir() and not library.exists()

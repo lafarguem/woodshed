@@ -4,11 +4,12 @@ import os
 import queue
 import re
 import shlex
+import shutil
 import sys
 import tempfile
 import threading
 from collections import Counter
-from contextlib import nullcontext
+from contextlib import nullcontext, suppress
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -68,7 +69,9 @@ def init():
     console.print("[bold]Let's set up Woodshed.[/bold] Press Enter to keep the value in brackets.\n")
 
     console.print("[bold]1. Where should your recordings go?[/bold]")
+    before = Path(settings.library).expanduser()
     folder = Path(Prompt.ask("Folder", default=settings.library)).expanduser()
+    _offer_move(before, folder)
     folder.mkdir(parents=True, exist_ok=True)
     settings.library = _tilde(folder)
     settings.take_format = _pick_format(settings.take_format)
@@ -1168,6 +1171,50 @@ def _pick_device(current: str | None) -> str | None:
     number = IntPrompt.ask("Number", choices=[str(i) for i in range(1, len(names) + 1)],
                            default=names.index(suggested) + 1, show_choices=False)
     return names[number - 1]
+
+
+FINDER_FILES = {".DS_Store"}  # Finder's own, left in any folder it shows
+
+
+def _offer_move(old: Path, new: Path) -> None:
+    """When the library changes folder, offer to move what's in the old one: left there, Woodshed no longer sees
+    it. Everything goes, hidden files too (each song's reference, takes waiting to be filed)."""
+    if not old.is_dir() or old.resolve() == new.resolve():
+        return
+    entries = sorted(p for p in old.iterdir() if p.name not in FINDER_FILES)
+    if not entries:
+        return
+    if new.resolve().is_relative_to(old.resolve()):
+        console.print(f"[yellow]{escape(_tilde(new))} is inside your library, so your recordings stay in "
+                      f"{escape(_tilde(old))}. Move them in Finder if you want them there.[/yellow]")
+        return
+    if clashes := [p.name for p in entries if (new / p.name).exists()]:
+        console.print(f"[yellow]{escape(_tilde(new))} already has {escape(', '.join(clashes))}, so your recordings "
+                      f"stay in {escape(_tilde(old))}. Merge the two folders in Finder.[/yellow]")
+        return
+    console.print(f"Your recordings are in {escape(_tilde(old))}. Left there, Woodshed won't see them.")
+    if _interactive():
+        move = widgets.pick(console, [f"Move them to {_tilde(new)}", f"Leave them in {_tilde(old)}"]) == 0
+    else:
+        move = Confirm.ask(f"Move them to {escape(_tilde(new))}?", default=True)
+    if not move:
+        return
+    new.mkdir(parents=True, exist_ok=True)
+    try:
+        with console.status("Moving your recordings…"):
+            for entry in entries:
+                shutil.move(entry, new / entry.name)
+    except OSError as e:
+        console.print(f"[red]Couldn't move everything: {escape(str(e))}[/red] What moved is in {escape(_tilde(new))}, "
+                      f"the rest still in {escape(_tilde(old))}. Nothing was saved: finish in Finder, then run "
+                      "shed init again.")
+        raise typer.Exit(1)
+    for leftover in old.iterdir():
+        if leftover.name in FINDER_FILES:
+            leftover.unlink()
+    with suppress(OSError):
+        old.rmdir()
+    console.print(f"[green]✓[/green] Moved your recordings to {escape(_tilde(new))}")
 
 
 def _pick_format(current: str) -> str:

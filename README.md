@@ -54,6 +54,7 @@ arrow keys. Every question has a default, so pressing Enter all the way through 
 1. **Where to save recordings, and how.** Default: `~/Music/Woodshed`, as MP3 (about 1.4 MB a minute).
    Apple Lossless (`.m4a`) keeps takes exactly as recorded, in files about 4 times larger. Changing it
    only affects the takes filed from then on, and `shed rec --m4a` (or `--mp3`) decides for one take.
+   Picking another folder offers to move your recordings there, unless it already has a song of the same name.
 2. **Which microphone,** from a list that shows how each is connected. It suggests an audio
    interface if you have one, else your Mac's built-in mic. Bluetooth earbuds record at
    phone-call quality.
