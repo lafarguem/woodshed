@@ -434,28 +434,7 @@ def _show_take(songs: Library, song: str, number: int, references: rating.Refere
     [take] = _rate(songs, [takes[number - 1]], with_melody=reference is not None)  # only this one, if need be
     console.print(f"[bold]{escape(song)}[/bold], take {number} of {len(takes)}, recorded {_when(take.path)} "
                   f"({_length(take.path)})")
-    rated = _rated(take.metrics, take.melody, reference)
-    overall, details, _ = _rating_parts(rated, [], references, pitch_figures=False)
-    console.print(f"[dim]{UNRATED}[/dim]" if overall is None
-                  else " · ".join([f"Rated [bold]{overall:.1f}/10[/bold]", *details]))
-    if comparison := rated.comparison:
-        best, worst = references.melody_cents
-        under, over = sum(line.cents < 0 for line in comparison.lines), sum(line.cents > 0 for line in comparison.lines)
-        console.print(f"Pitch, against the melody ({len(comparison.lines)} lines compared):")
-        console.print(f"  {comparison.typical:.0f}¢ off, either way: that's what's rated "
-                      f"(10/10 at {best:g}¢, 0/10 at {worst:g}¢)")
-        console.print(f"  {_lean(comparison.where)}, typically: {under} line{'' if under == 1 else 's'} sit"
-                      f"{'s' if under == 1 else ''} under the melody, {over} over")
-        _melody_feedback(comparison, sitting=False)
-    elif rated.metrics.pitch_cents is not None:
-        best, worst = references.pitch_cents
-        console.print("Pitch, against the song's scale" + (f" [dim]({ON_THE_SCALE.lower()})[/dim]:" if reference else ":"))
-        console.print(f"  {rated.metrics.pitch_cents:.0f}¢ off, either way: that's what's rated "
-                      f"(10/10 at {best:g}¢, 0/10 at {worst:g}¢)")
-        if (lean := rated.metrics.pitch_lean_cents) is not None:
-            console.print(f"  {_lean(lean)}, typically: against your instrument's tuning")
-        else:
-            console.print("  [dim]Where the notes sit, under or over, wasn't measured for this take.[/dim]")
+    _take_report(_rated(take.metrics, take.melody, reference), [], references, reference)
     console.print(f"[dim]{escape(str(take.path))}[/dim]")
 
 
@@ -1044,8 +1023,10 @@ def _score_text(rated: Rated, key: str, references: rating.References, figures: 
         return f"pitch {score:.1f}/10"
     if key == "pitch":
         if rated.comparison:
-            return f"pitch {score:.1f}/10 ({rated.comparison.typical:.0f}¢ off the melody)"
-        return f"pitch {score:.1f}/10 ({rated.metrics.pitch_cents:.0f}¢ off)"
+            return (f"pitch {score:.1f}/10 ({rated.comparison.typical:.0f}¢ off the melody · "
+                    f"{_lean(rated.comparison.where)})")
+        lean = "" if rated.metrics.pitch_lean_cents is None else f" · {_lean(rated.metrics.pitch_lean_cents)}"
+        return f"pitch {score:.1f}/10 ({rated.metrics.pitch_cents:.0f}¢ off{lean})"
     if key == "timing":
         return f"timing {score:.1f}/10 (tempo ±{100 * rated.metrics.tempo_spread:.1f}%)"
     return f"rated {score:.1f}/10"
@@ -1070,12 +1051,34 @@ def _rating_parts(rated: Rated, earlier: list[Rated], references: rating.Referen
     return s["overall"], details, compared
 
 
-def _rating_line(rated: Rated, earlier: list[Rated], references: rating.References) -> str:
-    overall, details, compared = _rating_parts(rated, earlier, references)
+def _take_report(rated: Rated, earlier: list[Rated], references: rating.References,
+                 reference: lib.Reference | None) -> None:
+    """A take's rating, then its pitch in detail and what stands out against the song's reference melody: what
+    `shed rec` and `shed add` say once a take is filed, and what `shed progress --take` shows."""
+    overall, details, compared = _rating_parts(rated, earlier, references, pitch_figures=False)
     if overall is None:
-        return f"[dim]{UNRATED}[/dim]"
+        console.print(f"[dim]{UNRATED}[/dim]")
+        return
     compared = f"[green]{compared}[/green]" if compared == BEST_YET else compared
-    return " · ".join([f"Rated [bold]{overall:.1f}/10[/bold]", *details, *([compared] if compared else [])])
+    console.print(" · ".join([f"Rated [bold]{overall:.1f}/10[/bold]", *details, *([compared] if compared else [])]))
+    if comparison := rated.comparison:
+        best, worst = references.melody_cents
+        under, over = sum(line.cents < 0 for line in comparison.lines), sum(line.cents > 0 for line in comparison.lines)
+        console.print(f"Pitch, against the melody ({len(comparison.lines)} lines compared):")
+        console.print(f"  Typically {comparison.typical:.0f}¢ off, either way (10/10 at {best:g}¢, 0/10 at {worst:g}¢)")
+        console.print(f"  Typically {_lean(comparison.where)}: {under} line{'' if under == 1 else 's'} sit"
+                      f"{'s' if under == 1 else ''} under the melody, {over} over")
+        _melody_feedback(comparison, sitting=False)
+    elif rated.metrics.pitch_cents is not None:
+        best, worst = references.pitch_cents
+        on_the_scale = ON_THE_SCALE.lower().rstrip(".")
+        console.print("Pitch, against the song's scale" + (f" [dim]({on_the_scale})[/dim]:" if reference else ":"))
+        console.print(f"  Typically {rated.metrics.pitch_cents:.0f}¢ off, either way "
+                      f"(10/10 at {best:g}¢, 0/10 at {worst:g}¢)")
+        if (lean := rated.metrics.pitch_lean_cents) is not None:
+            console.print(f"  Typically {_lean(lean)}, against your instrument's tuning")
+        else:
+            console.print("  [dim]Where the notes sit, under or over, wasn't measured for this take.[/dim]")
 
 
 ALL_CLOSE = f"No line strays {melody.FAR_CENTS}¢ or more from the melody."
@@ -1447,11 +1450,7 @@ def _save(heard: Heard, choice: Choice, songs: Library, source: str | None = Non
         # Your best, among the takes rated the same way (on the melody, or on the scale).
         others = [r for t in earlier if (r := _rated(t.metrics, t.melody, reference))
                   and (r.comparison is None) == (rated.comparison is None)]
-        console.print(_rating_line(rated, others, config.load().references()))
-        if rated.comparison:
-            _melody_feedback(rated.comparison)
-        elif reference:
-            console.print(f"[dim]{ON_THE_SCALE}[/dim]")
+        _take_report(rated, others, config.load().references(), reference)
     return Filed(dest, choice.song, number, count, rated, others, reference)
 
 

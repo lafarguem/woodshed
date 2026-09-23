@@ -10,7 +10,10 @@ $ shed rec
 Heard: “…”
 Recognized Harbor Lights from your earlier takes.
 ✓ Saved Harbor Lights/2026-09-21_18-30.mp3 (take 7 of 7)
-Rated 7.5/10 · pitch 7.3/10 (21¢ off) · timing 7.8/10 (tempo ±2.1%) · your best: 7.9
+Rated 7.5/10 · pitch 7.3/10 · timing 7.8/10 (tempo ±2.1%) · your best: 7.9
+Pitch, against the song's scale:
+  Typically 21¢ off, either way (10/10 at 12¢, 0/10 at 38¢)
+  Typically 8¢ under, against your instrument's tuning
 ```
 
 ## How it recognizes a song
@@ -189,10 +192,10 @@ its tuning and tempo.
 - tone and expression
 
 `shed progress` shows two figures for pitch: how far off your notes typically are, either way, which is
-what's rated, and where they typically sit, under or over (`--take` spells both out for one take). A take
-whose notes stray both ways and one sung flat throughout can be just as far off, but only the second
-leans. Against the scale, takes rated before Woodshed measured the second only have the first; against a
-reference melody, both are always there.
+what's rated, and where they typically sit, under or over. `shed progress --take` spells both out for one
+take, and so do `shed rec` and `shed add` once a take is filed. A take whose notes stray both ways and one
+sung flat throughout can be just as far off, but only the second leans. Against the scale, takes rated
+before Woodshed measured the second only have the first; against a reference melody, both are always there.
 
 The reference points are judgment calls, set so that professional recordings score about 9. Change
 them with `shed init` (or the `pitch_*`, `melody_*` and `timing_*` keys in `config.toml`), along with pitch's
@@ -212,8 +215,10 @@ It sounds like “Harbor Lights”. Rate that song against it? [y/n] (y):
 $ shed rec
 …
 ✓ Saved Harbor Lights/2026-09-22_18-30.mp3 (take 8 of 8)
-Rated 6.1/10 · pitch 5.0/10 (58¢ off the melody) · timing 7.8/10 (tempo ±2.1%) · your best: 6.4
-Your lines sit a little under the melody (about 40¢).
+Rated 6.1/10 · pitch 5.0/10 · timing 7.8/10 (tempo ±2.1%) · your best: 6.4
+Pitch, against the melody (22 lines compared):
+  Typically 58¢ off, either way (10/10 at 15¢, 0/10 at 100¢)
+  Typically 40¢ under: 17 lines sit under the melody, 5 over
 Furthest from the melody:
   1:12  “and every bell was ringing out your name”  130¢ under
   0:31  “we counted ships until the evening fall”  85¢ over

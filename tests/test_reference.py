@@ -117,9 +117,10 @@ def test_a_take_is_rated_on_the_melody_and_told_which_lines_are_off(harbor, tmp_
     assert result.exit_code == 0, result.output
     assert "Recognized Harbor Lights from your earlier takes" in text(result)
     # 0 on pitch, where the scale would give it 10; timing 8.0
-    assert "Rated 3.2/10 · pitch 0.0/10 (100¢ off the melody)" in text(result)
+    assert "Rated 3.2/10 · pitch 0.0/10 · timing 8.0/10 (tempo ±2.0%)" in text(result)
     assert "your best" not in text(result)  # the earlier take isn't rated on the melody yet
-    assert "Your lines sit about a semitone under the melody." in text(result)
+    assert ("Pitch, against the melody (6 lines compared): Typically 100¢ off, either way (10/10 at 15¢, 0/10 at "
+            "100¢) Typically 100¢ under: 6 lines sit under the melody, 0 over") in text(result)
     assert f"Furthest from the melody: 0:01 “{LINES[0]}” 100¢ under 0:05 “{LINES[1]}” 100¢ under" in text(result)
     new = harbor.library.takes_of("Harbor Lights", melody=True)[-1]
     assert new.melody == harbor.melody
@@ -132,8 +133,9 @@ def test_a_take_that_hardly_matches_the_reference_is_rated_on_the_scale(harbor, 
 
     result = harbor("add", str(recording(tmp_path, "memo.m4a")))
 
-    assert "pitch 10.0/10 (10¢ off)" in text(result)
-    assert "Too few lines of this take matched the reference, so its pitch is rated against the scale" in text(result)
+    assert "Rated 9.2/10 · pitch 10.0/10 · timing 8.0/10 (tempo ±2.0%)" in text(result)
+    assert ("Pitch, against the song's scale (too few lines of this take matched the reference, so its pitch is "
+            "rated against the scale): Typically 10¢ off, either way (10/10 at 12¢, 0/10 at 38¢)") in text(result)
 
 
 def test_progress_follows_the_melody_of_takes_filed_before(harbor):
@@ -166,7 +168,8 @@ def test_the_worst_and_best_takes_are_picked_by_the_melody(harbor, tone, monkeyp
 
     assert result.exit_code == 0, result.output
     assert played == ["02", "03"]
-    assert "pitch 0.0/10 (100¢ off the melody)" in text(result) and "pitch 10.0/10 (0¢ off the melody)" in text(result)
+    assert ("pitch 0.0/10 (100¢ off the melody · 100¢ under)" in text(result)
+            and "pitch 10.0/10 (0¢ off the melody · centered)" in text(result))
 
 
 def test_a_reference_analyzed_by_an_older_version_is_set_again(harbor):
@@ -351,8 +354,8 @@ def test_any_take_is_shown_against_the_melody(harbor, tone):
     assert "One take in detail: shed progress 'Harbor Lights' --take N" in text(latest)
     assert first.exit_code == 0, first.output
     assert "Harbor Lights, take 1 of 2, recorded 2026-06-01 20:00" in text(first)
-    assert ("Pitch, against the melody (6 lines compared): 0¢ off, either way: that's what's rated (10/10 at 15¢, "
-            "0/10 at 100¢) centered, typically: 1 line sits under the melody, 0 over") in text(first)
+    assert ("Pitch, against the melody (6 lines compared): Typically 0¢ off, either way (10/10 at 15¢, "
+            "0/10 at 100¢) Typically centered: 1 line sits under the melody, 0 over") in text(first)
     assert f"Furthest from the melody: 0:10 “{LINES[2]}” 100¢ under" in text(first)
 
 

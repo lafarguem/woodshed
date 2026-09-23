@@ -344,7 +344,7 @@ def test_the_phone_is_shown_the_lines_furthest_from_the_melody(shed, phone_take,
     phone_take.file()
 
     result = phone_take.session.takes()[0]["result"]
-    assert result["rating"].startswith("Rated 3.2/10 · pitch 0.0/10 (100¢ off the melody)")
+    assert result["rating"].startswith("Rated 3.2/10 · pitch 0.0/10 (100¢ off the melody · 100¢ under)")
     assert result["notes"] == ["Your lines sit about a semitone under the melody."]
     assert result["furthest"][0] == {"time": "0:01", "text": LINES[0], "off": "100¢ under"}
     assert result["closest"] == []  # none is close
