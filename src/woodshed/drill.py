@@ -1,7 +1,11 @@
-"""Finding the note a line starts on, before singing it (`shed drill`).
+"""Finding the note a line starts on, before singing it, then where you sit against the melody as you sing
+(`shed drill`). Nothing is recorded.
 
-Nothing is recorded. For each line of the song's reference melody, the note its first held word is sung on is
-played, then a tuner follows your voice until you've held that note for a second:
+For each line of the song's reference melody, the note its first held word is sung on is played, then a tuner
+follows your voice until you've held that note for a second. Then you sing the song: the tuner goes (a key brings
+it back), and a chart
+of where your latest notes landed against the melody takes its place, a few seconds behind you (listen.py):
+nothing to read as you sing. Saying another song's name, your instrument quiet, drills that one.
 
 - The note is moved to your key: by default, the one your instrument played in your latest take compared
   with the melody (melody.Comparison.shift), since you tend to play a song the same way each time.
@@ -20,11 +24,16 @@ played, then a tuner follows your voice until you've held that note for a second
 
 import queue
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from woodshed.melody import Melody, notes_on_words
+
+if TYPE_CHECKING:
+    from rich.text import Text
 
 NOTE_NAMES = ["A", "A♯", "B", "C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯"]
 FOUND_CENTS = 50  # this close to the note, you're on it rather than on its neighbour
@@ -33,6 +42,12 @@ TONE_SECONDS = 1.5
 _READING_SECONDS = 0.25  # the tuner shows the median pitch of a quarter second of singing…
 _LAG_SECONDS = 0.2  # …ending this long ago
 _KEEP_SECONDS = 0.5  # a reading is shown this long when the next ones miss
+_CHART_SEMITONES = 6  # the chart goes from this many under the melody to this many over
+_CHART_ROWS = 5
+_NEWS_SECONDS = 5.0  # "Switched to…" shows this long
+# A note of the song compared this recently (listen.py), you're singing it. They come a few seconds late, and
+# can be far apart where few words are matched to the melody's.
+_SINGING_SECONDS = 30.0
 _LISTEN_SECONDS = 1.0  # of audio given to the pitch tracker each time, for context
 _AFTER_TONE = 0.3  # the tone's echo in the room, not listened to either
 _RATE = 16_000  # what the pitch tracker takes
@@ -131,34 +146,95 @@ def reading(f0: np.ndarray, confidence: np.ndarray, hop_seconds: float) -> float
     return float(np.median(12 * np.log2(f0[voiced] / 440)))
 
 
-def run(console, starts_: list[Start], title: str, device: int | str | None = None,
-        transposed: str | None = None) -> None:
-    """Drill the lines' starting notes until q, Escape or Ctrl+C."""
+@dataclass
+class Song:
+    """A song ready to drill."""
+
+    title: str
+    reference: Melody
+    shift: int  # semitones your instrument plays above the reference
+    starts: list[Start]
+    transposed: str | None  # said when shift isn't 0
+
+
+def chart(offsets: list[float]) -> list["Text"]:
+    """Where your latest notes landed against the melody, drawn: a column for each semitone from 6 under to 6
+    over, as tall as the notes that landed there, the melody in the middle. The column most landed in is colored
+    (green on the melody, yellow a semitone off, red further), and an arrow under it says which way to go."""
+    from rich.text import Text
+
+    from woodshed import listen
+
+    recent = (np.round(np.asarray(offsets[-listen.RECENT_NOTES:])).astype(int) + 6) % 12 - 6  # as settled() has it
+    votes = np.bincount(np.clip(recent + _CHART_SEMITONES, 0, 2 * _CHART_SEMITONES), minlength=2 * _CHART_SEMITONES + 1)
+    where = listen.settled(offsets)
+    color = "grey50" if where is None else "green" if where[0] == 0 else "yellow" if abs(where[0]) == 1 else "red"
+    top = max(int(votes.max()), 1)
+    rows = []
+    for level in range(_CHART_ROWS, 0, -1):
+        row = Text("  ")
+        for semitones, n in enumerate(votes, -_CHART_SEMITONES):
+            tall = n and n * _CHART_ROWS >= (level - 0.5) * top
+            row.append("███ " if tall else "    ", color if where and semitones == where[0] else "grey35")
+        rows.append(row)
+    middle = 2 + 4 * _CHART_SEMITONES + 1  # the melody's column, in characters
+    rows.append(Text("  " + "".join("─┼──" if s == 0 else "────" for s in range(-_CHART_SEMITONES,
+                                                                           _CHART_SEMITONES + 1)), "grey50"))
+    labels = [" "] * (middle + 4 * _CHART_SEMITONES + 2)
+    for at, word in ((2, "under"), (middle - 3, "melody"), (len(labels) - 5, "over")):
+        labels[at:at + len(word)] = word
+    rows.append(Text("".join(labels), "grey50"))
+    if where is not None:
+        arrow = "✓" if where[0] == 0 else "▲ higher" if where[0] < 0 else "▼ lower"
+        rows.append(Text(" " * (middle - len(arrow) // 2) + arrow, f"bold {color}"))
+    return rows
+
+
+def run(console, prepare: Callable[[str], Song], title: str, titles: list[str], device: int | str | None = None,
+        language: str | None = None) -> None:
+    """Drill a song until q, Escape or Ctrl+C: its lines' starting notes, and where you sit against its melody as
+    you sing it. `prepare` gets a song ready, by its title, when another one in `titles` is asked for."""
     import sounddevice as sd
     from rich.console import Group
     from rich.live import Live
     from rich.text import Text
     from scipy.signal import resample_poly
 
-    from woodshed import rmvpe, terminal
+    from woodshed import listen, rmvpe, terminal
 
     rate = int(sd.query_devices(device, "input")["default_samplerate"])
     out_rate = int(sd.query_devices(kind="output")["default_samplerate"])
     blocks: queue.Queue[np.ndarray] = queue.Queue()
     heard = np.zeros(0, np.float32)  # the latest second from the microphone
-    index, hold, found, sung, deaf_until = 0, Hold(), False, None, 0.0
+    song = prepare(title)
+    listener = listen.Listener(rate, language)
+    follow = listen.Follow(song.reference, song.shift)
+    index, hold, found, sung, deaf_until, news, news_until = 0, Hold(), False, None, 0.0, "", 0.0
     sung_at = 0.0  # when `sung` was last read
+    back_at = 0.0  # when (listener.now) you last went back to a line's note: what the listener heard before is past
 
     def play_note():
         nonlocal deaf_until
-        sd.play(tone(starts_[index].note, out_rate), out_rate)
+        sd.play(tone(song.starts[index].note, out_rate), out_rate)
         deaf_until = time.monotonic() + TONE_SECONDS + _AFTER_TONE
 
+    def singing() -> bool:
+        """Whether you're singing the song: you found the line's note, so you went on, or the listener heard you
+        sing it (a few seconds behind). Until you go back to a line's note with a key."""
+        return found or follow.sung_at > max(back_at, listener.now - _SINGING_SECONDS)
+
     def render() -> Group:
-        start = starts_[index]
-        rows = [Text.assemble((title, "bold"), (f"  line {index + 1} of {len(starts_)}", "dim"))]
-        if transposed:
-            rows.append(Text(transposed, "dim"))
+        rows = [Text(song.title, "bold")]
+        if time.monotonic() < news_until:
+            rows.append(Text(news, "bold cyan"))
+        if singing():  # nothing to read: where you sit, drawn
+            if follow.line is not None:
+                rows.append(Text(f"“{song.reference.lines[follow.line]}”", "italic grey50"))
+            return Group(*rows, Text(), *chart(follow.offsets), Text(), Text("q quits", "grey35"))
+        start = song.starts[index]
+        rows[0].append(f"  line {index + 1} of {len(song.starts)}", "dim")
+        if song.transposed:
+            rows.append(Text(song.transposed, "dim"))
         rows += [Text(f"“{start.line}”"),
                  Text.assemble("Starts on “", (start.word, "bold"), "”: ", (note_name(start.note), "bold cyan")),
                  Text()]
@@ -176,41 +252,64 @@ def run(console, starts_: list[Start], title: str, device: int | str | None = No
             color = "green" if abs(off) * 100 < FOUND_CENTS else "yellow" if abs(off) < 1 else "red"
             rows += [Text.assemble("  ", ("".join(cells), color)),
                      Text.assemble("  You: ", (note_name(sung), "bold"), "  ", (advice(off), color))]
-        rows += [Text(), Text("←/→ another line · Space plays the note again · q quits", "dim")]
+        rows.append(Text())
+        if not listener.ready:
+            rows.append(Text("Getting ready to follow you as you sing…", "dim"))
+        elif follow.offsets:  # between verses: where you sat
+            rows += chart(follow.offsets)
+        else:
+            rows.append(Text("Then sing the song: where you sit against the melody shows here.", "dim"))
+        rows += [Text(), Text("←/→ another line · Space plays the note again · say a song's name to switch to "
+                              "it · q quits", "dim")]
         return Group(*rows)
 
     stream = sd.InputStream(device=device, channels=1, samplerate=rate, dtype="float32",
                             callback=lambda indata, *_: blocks.put(indata[:, 0].copy()))
-    with stream, terminal.keys() as next_key, Live(render(), console=console, transient=True,
-                                                    auto_refresh=False) as live:
-        play_note()
-        last = time.monotonic()
-        try:
-            while True:
-                key = next_key(timeout=0.1)
-                if key in ("q", "escape"):
-                    break
-                if key in ("left", "right", "up", "down", " "):
-                    if key != " ":
-                        index = (index + (1 if key in ("right", "down") else -1)) % len(starts_)
-                    hold, found, sung = Hold(), False, None
-                    play_note()
-                while not blocks.empty():
-                    heard = np.concatenate([heard, blocks.get_nowait()])[-int(_LISTEN_SECONDS * rate):]
-                now = time.monotonic()
-                if now >= deaf_until and len(heard) >= rate * (_READING_SECONDS + _LAG_SECONDS) and not found:
-                    f0, confidence = rmvpe.pitch(level(resample_poly(heard, _RATE, rate)))
-                    now_sung = reading(f0, confidence, rmvpe.HOP_SECONDS)
-                    found = hold.update(None if now_sung is None else offset(now_sung, starts_[index].note),
-                                        now - last)
-                    if now_sung is not None:
-                        sung, sung_at = now_sung, now
-                    elif now - sung_at > _KEEP_SECONDS:
-                        sung = None
-                elif now < deaf_until:
-                    heard = heard[:0]  # the tone, not you
-                last = now
-                live.update(render(), refresh=True)
-        except KeyboardInterrupt:
-            pass
-    sd.stop()
+    try:
+        with stream, terminal.keys() as next_key, Live(render(), console=console, transient=True,
+                                                        auto_refresh=False) as live:
+            play_note()
+            last = time.monotonic()
+            try:
+                while True:
+                    key = next_key(timeout=0.1)
+                    if key in ("q", "escape"):
+                        break
+                    if key in ("left", "right", "up", "down", " "):
+                        if key != " ":
+                            index = (index + (1 if key in ("right", "down") else -1)) % len(song.starts)
+                        hold, found, sung, back_at = Hold(), False, None, listener.now
+                        play_note()
+                    now = time.monotonic()
+                    while not blocks.empty():
+                        block = blocks.get_nowait()
+                        if now < deaf_until:
+                            block = np.zeros_like(block)  # the tone, not you
+                        heard = np.concatenate([heard, block])[-int(_LISTEN_SECONDS * rate):]
+                        listener.feed(block)
+                    for result in listener.results():
+                        asked = follow.update(result, [t for t in titles if t != song.title])
+                        if asked:
+                            song = prepare(asked)
+                            follow = listen.Follow(song.reference, song.shift, since=result.end)
+                            index, hold, found, sung = 0, Hold(), False, None
+                            news, news_until = f"Switched to {asked}.", time.monotonic() + _NEWS_SECONDS
+                            play_note()
+                    if now >= deaf_until and len(heard) >= rate * (_READING_SECONDS + _LAG_SECONDS) and not singing():
+                        f0, confidence = rmvpe.pitch(level(resample_poly(heard, _RATE, rate)))
+                        now_sung = reading(f0, confidence, rmvpe.HOP_SECONDS)
+                        found = hold.update(None if now_sung is None else offset(now_sung, song.starts[index].note),
+                                            now - last)
+                        if now_sung is not None:
+                            sung, sung_at = now_sung, now
+                        elif now - sung_at > _KEEP_SECONDS:
+                            sung = None
+                    elif now < deaf_until:
+                        heard = heard[:0]
+                    last = now
+                    live.update(render(), refresh=True)
+            except KeyboardInterrupt:
+                pass
+    finally:
+        sd.stop()
+        listener.close()

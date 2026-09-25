@@ -89,9 +89,11 @@ def library(tmp_path, tone):
 
 
 def drilled(library, monkeypatch, *args):
+    """Runs shed drill up to where it would start listening: what it would drill, and could switch to."""
     run = []
-    monkeypatch.setattr(drill, "run", lambda console, starts, title, device, transposed:
-                        run.append((starts, title, transposed)))
+    monkeypatch.setattr(cli.models, "missing", lambda: [])
+    monkeypatch.setattr(drill, "run", lambda console, prepare, title, titles, device, language:
+                        run.append((prepare(title), titles, prepare)))
     result = CliRunner().invoke(cli.app, ["drill", *args, "--library", str(library.root)])
     return result, run
 
@@ -100,14 +102,25 @@ def test_drills_in_the_key_and_register_of_your_latest_take(library, monkeypatch
     library.set_reference("Harbor Lights", sing(), "original.mp3")
     result, run = drilled(library, monkeypatch, "harbor")
     assert result.exit_code == 0, result.output
-    (starts, title, transposed), = run
-    assert title == "Harbor Lights"
-    assert transposed == "Your instrument plays 5 semitones over the reference, so the melody was moved to match."
-    assert starts[0].note == TUNE[0][0] + 5 - 12
+    (song, titles, _), = run
+    assert song.title == "Harbor Lights" and titles == ["Harbor Lights"]
+    assert song.transposed == ("Your instrument plays 5 semitones over the reference, so the melody was moved to "
+                               "match.")
+    assert song.shift == 5 and song.starts[0].note == TUNE[0][0] + 5 - 12
 
     result, run = drilled(library, monkeypatch, "harbor", "--transpose", "-2")
-    assert run[0][0][0].note % 12 == (TUNE[0][0] - 2) % 12
-    assert run[0][2] == "Your instrument plays 2 semitones under the reference, so the melody was moved to match."
+    song = run[0][0]
+    assert song.starts[0].note % 12 == (TUNE[0][0] - 2) % 12
+    assert song.transposed == "Your instrument plays 2 semitones under the reference, so the melody was moved to match."
+
+
+def test_a_song_asked_for_as_you_drill_is_in_the_key_you_last_played_it(library, monkeypatch):
+    library.set_reference("Harbor Lights", sing(), "original.mp3")
+    library.set_reference("Winter Town", sing(), "original.mp3")
+    result, run = drilled(library, monkeypatch, "harbor", "--transpose", "2")
+    (song, titles, prepare), = run
+    assert titles == ["Harbor Lights", "Winter Town"] and song.shift == 2
+    assert prepare("Winter Town").shift == 0  # no take of it compared with its melody: the original key
 
 
 def test_a_song_needs_a_reference_to_drill(library, monkeypatch):

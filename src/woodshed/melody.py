@@ -154,19 +154,11 @@ def compare(take: Melody, reference: Melody) -> Comparison | None:
     """How the take's melody compares with the reference's, line by line; None if too few of its lines
     could be compared (not enough words matched, or notes held on them)."""
     pairs = align(take.words, reference.words)
-    take_notes, reference_notes = notes_on_words(take), notes_on_words(reference)
-    compared = []  # (take word, reference word, take note, reference note)
-    for k, l in pairs:
-        mine, theirs = take_notes[k], reference_notes[l]
-        if mine and theirs:
-            for p, note in enumerate(mine):  # in order, spread over the reference's notes on the word
-                compared.append((k, l, note, theirs[round(p * (len(theirs) - 1) / max(len(mine) - 1, 1))]))
-    if not compared:
+    compared = _compared(take, reference, pairs)
+    if compared is None:
         return None
-    my_word, their_word, sung, meant = (np.array(column) for column in zip(*compared))
+    my_word, their_word, sung, pitch, target = compared
     line_of = np.array([take.words[k][3] for k in my_word])
-    pitch = np.array([note[2] for note in take.notes])[sung]
-    target = np.round(np.array([note[2] for note in reference.notes]))[meant]
 
     def offsets(shift: int) -> np.ndarray:
         return 100 * ((pitch - (target + shift) + 6) % 12 - 6)  # cents, octaves ignored
@@ -197,6 +189,36 @@ def compare(take: Melody, reference: Melody) -> Comparison | None:
             passages.append(Sung(r, take.words[my_word[here].min()][1], take.words[my_word[here].max()][2],
                                  float(np.median(off[here]))))
     return Comparison(shift, by_instrument, lines, passages)
+
+
+def note_offsets(take: Melody, reference: Melody, shift: int) -> list[tuple[float, int, float]]:
+    """Each note of the take compared with the melody moved `shift` semitones: (when it starts, the reference's
+    line it's sung on, how far off it is in semitones, octaves ignored: under the melody if negative), in order.
+    For a stretch too short to tell the key from (`shed drill` listening as you sing), the key is given."""
+    compared = _compared(take, reference, align(take.words, reference.words))
+    if compared is None:
+        return []
+    _, their_word, sung, pitch, target = compared
+    return [(take.notes[n][0], reference.words[l][3], float((p - (t + shift) + 6) % 12 - 6))
+            for n, l, p, t in zip(sung, their_word, pitch, target)]
+
+
+def _compared(take: Melody, reference: Melody, pairs: list[tuple[int, int]]) -> tuple[np.ndarray, ...] | None:
+    """The notes held on the words heard as the same: (take word, reference word, take note, its pitch, the
+    reference's note, to the nearest semitone), a row each; None if there are none."""
+    take_notes, reference_notes = notes_on_words(take), notes_on_words(reference)
+    compared = []  # (take word, reference word, take note, reference note)
+    for k, l in pairs:
+        mine, theirs = take_notes[k], reference_notes[l]
+        if mine and theirs:
+            for p, note in enumerate(mine):  # in order, spread over the reference's notes on the word
+                compared.append((k, l, note, theirs[round(p * (len(theirs) - 1) / max(len(mine) - 1, 1))]))
+    if not compared:
+        return None
+    my_word, their_word, sung, meant = (np.array(column) for column in zip(*compared))
+    pitch = np.array([note[2] for note in take.notes])[sung]
+    target = np.round(np.array([note[2] for note in reference.notes]))[meant]
+    return my_word, their_word, sung, pitch, target
 
 
 def align(take: list[tuple], reference: list[tuple]) -> list[tuple[int, int]]:

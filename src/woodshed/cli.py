@@ -25,6 +25,7 @@ from rich.table import Table
 from rich.text import Text
 
 from woodshed import audio, config, genius, library as lib, melody, microphones, models, phone, rating, widgets, youtube
+from woodshed import drill as drilling
 from woodshed.library import Library, Take
 
 # Recognition runs offline; `shed init` downloads the models it needs.
@@ -362,24 +363,49 @@ def drill(
                                                        "take]")] = None,
     device: Annotated[str | None, typer.Option(envvar="WOODSHED_DEVICE", show_default=False,
                                                help="Input device number or name (see `shed devices`).")] = None,
+    language: LanguageOpt = None,
     library: LibraryOpt = None,
 ):
-    """Find the note each line starts on: it's played, then a tuner follows your voice. Nothing is recorded."""
+    """Find the note each line starts on, then sing: where you sit against the melody shows as you go.
+    Say “switch to” and a song's name to change songs. Nothing is recorded."""
     import sounddevice as sd
-
-    from woodshed import drill as drilling
 
     settings = config.load()
     songs = _existing_library(library, settings)
+    with_reference = [s for s in songs.songs() if songs.has_reference(s)]
     if name:
         song = _find_song(songs, " ".join(name))
     else:
-        with_reference = [s for s in songs.songs() if songs.has_reference(s)]
         if not with_reference or not _interactive():
             console.print("Name the song to drill, e.g. shed drill harbor" if with_reference else
                           "No song has a reference melody yet: set one with shed reference.")
             raise typer.Exit(1)
         song = with_reference[widgets.pick(console, with_reference)]
+    first = _drilled(songs, song, transpose)
+    if missing := models.missing():
+        console.print(f"[yellow]{_not_downloaded(missing)} Run `shed init` to download.[/yellow]")
+        raise typer.Exit(1)
+    prepared = {song: first}
+
+    def prepare(title: str) -> drilling.Song:  # another song, asked for as you drill: in the key you last played it
+        if title not in prepared:
+            prepared[title] = _drilled(songs, title, None)
+        return prepared[title]
+
+    drillable = [s for s in with_reference if (r := _reference(songs, s)) and drilling.starts(r.melody)]
+    device = device or settings.device
+    try:
+        drilling.run(console, prepare, song, drillable,
+                     int(device) if device and device.isdigit() else device, language)
+    except (ValueError, sd.PortAudioError) as e:
+        console.print(f"[red]Can't listen to “{escape(device or 'your default microphone')}”: {escape(str(e))}."
+                      "[/red] Plug it in, or pick another microphone with `shed init` or --device.")
+        raise typer.Exit(1)
+
+
+def _drilled(songs: Library, song: str, transpose: int | None) -> drilling.Song:
+    """The song ready to drill, in the key given or, by default, the one your latest take of it was played in;
+    stops if it has no reference melody, or none of its notes were found."""
     reference = _reference(songs, song)
     if reference is None:
         console.print(f"“{escape(song)}” has no reference melody to drill against. Set one with "
@@ -395,14 +421,8 @@ def drill(
     if not starts:
         console.print(f"No notes were found in the reference melody of “{escape(song)}”.")
         raise typer.Exit(1)
-    device = device or settings.device
-    try:
-        drilling.run(console, starts, song, int(device) if device and device.isdigit() else device,
-                     melody.transposed(melody.Comparison(shift % 12, True, [])))
-    except (ValueError, sd.PortAudioError) as e:
-        console.print(f"[red]Can't listen to “{escape(device or 'your default microphone')}”: {escape(str(e))}."
-                      "[/red] Plug it in, or pick another microphone with `shed init` or --device.")
-        raise typer.Exit(1)
+    return drilling.Song(song, reference.melody, shift, starts,
+                         melody.transposed(melody.Comparison(shift % 12, True, [])))
 
 
 @app.command()

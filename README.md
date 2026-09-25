@@ -90,7 +90,7 @@ shed play harbor --rating   # your worst take, then your best (or --pitch, --tim
 shed play harbor -t 3       # take 3 (--take 3)
 shed reference ~/Music/harbor-lights.mp3  # rate a song's pitch against the original's melody
 shed reference harbor       # …or find the original on YouTube (needs yt-dlp, see below)
-shed drill harbor           # find the note each line starts on: it's played, then a tuner follows you
+shed drill harbor           # find the note each line starts on, then sing: where you sit against the melody shows
 shed devices                # microphones you can record from, and how they're connected
 shed init                   # change the folder, format, microphone, token or how takes are rated
 ```
@@ -319,9 +319,11 @@ off here. On 16 takes of a song by an amateur, which sat anywhere from 274¢ und
 
 ### Finding the notes
 
-`shed drill harbor` helps you find the note each line of the song starts on, before you sing it. It needs the
-song's reference melody, and records nothing. The note the line's first word is sung on is played, then a tuner
-follows your voice until you've held it for a second: which note you're on, and which way to go.
+`shed drill harbor` helps you find the notes of a song, and records nothing. It needs the song's reference
+melody.
+
+Before you sing a line, it plays the note the line's first word is sung on, then a tuner follows your voice
+until you've held it for a second: which note you're on, and which way to go.
 
 ```
 $ shed drill harbor
@@ -331,10 +333,35 @@ Starts on “the”: D3
 
   ──────●─────┼────────────
   You: B2  higher ↑ (3 semitones under)
-
-←/→ another line · Space plays the note again · q quits
 ```
 
+Then sing the song: nothing stops you. Once you've found the note, or it hears you sing, the tuner goes (←/→ or
+Space bring it back), and in its place a chart shows where your latest 15
+notes landed against the melody, a column for each semitone from 6 under to 6 over, so you can see at a glance
+when you've drifted a whole key away from it, and when you're back. The column most of them landed in is green on
+the melody, yellow a semitone off, red further, with an arrow saying which way to go.
+
+```
+Harbor Lights
+“so sail me home across the silver bay”
+
+              ███
+              ███
+              ███
+              ███
+              ███ ███ ███ ███
+  ─────────────────────────┼──────────────────────────
+  under                 melody                  over
+                       ▲ higher
+```
+
+- It listens to the latest 15 s every few seconds, as filing a take does (the voice separated, Whisper, the pitch
+  tracker), so it's 4-8 s behind you, and needs 8 notes held on words it matched to the melody before it says
+  which way to go: on a song with long notes, 20 s of singing or so; on a busier one, up to a minute.
+- Say another song's name to drill that one (a song with a reference melody): on its own, or with a few words
+  around it ("switch to Space Song", "let's do Space Song"), which help Whisper hear it right. Only while your
+  instrument is quiet, so singing a line with a song's name in it doesn't count, nor does a line of the song's
+  own sung without it.
 - The note is moved to the key your instrument played in your latest take (or `--transpose 3`: 3 semitones
   above the original, `-2` under it), and to the octave your voice usually sits in, in your takes of the song.
 - Any octave of the note counts, as in the rating.

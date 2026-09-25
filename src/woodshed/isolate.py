@@ -50,10 +50,21 @@ def _separator():
 
 def separate(src: Path, start: float = 0.0, seconds: float | None = None) -> Stems:
     """Split a section of the take (all of it by default) into voice and instrument."""
+    return separate_samples(audio.load(src, rate=_separator().samplerate, channels=2, start=start, seconds=seconds),
+                            _separator().samplerate)
+
+
+def separate_samples(mix: np.ndarray, rate: int) -> Stems:
+    """Split samples (mono, or channels × samples) into voice and instrument."""
+    import julius
     import torch
 
     separator = _separator()
-    mix = audio.load(src, rate=separator.samplerate, channels=2, start=start, seconds=seconds)
+    mix = np.atleast_2d(mix).astype(np.float32)
+    if mix.shape[0] == 1:
+        mix = np.repeat(mix, 2, axis=0)
+    if rate != separator.samplerate:
+        mix = julius.resample_frac(torch.from_numpy(mix), rate, separator.samplerate).numpy()
     _, stems = separator.separate_tensor(torch.from_numpy(mix), separator.samplerate)
     vocals = stems.pop("vocals").mean(0)
     accompaniment = sum(stems.values()).mean(0)
