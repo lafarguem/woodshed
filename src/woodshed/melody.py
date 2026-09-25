@@ -154,7 +154,7 @@ def compare(take: Melody, reference: Melody) -> Comparison | None:
     """How the take's melody compares with the reference's, line by line; None if too few of its lines
     could be compared (not enough words matched, or notes held on them)."""
     pairs = align(take.words, reference.words)
-    take_notes, reference_notes = _notes_on_words(take), _notes_on_words(reference)
+    take_notes, reference_notes = notes_on_words(take), notes_on_words(reference)
     compared = []  # (take word, reference word, take note, reference note)
     for k, l in pairs:
         mine, theirs = take_notes[k], reference_notes[l]
@@ -259,7 +259,7 @@ def _place(alike: list[list[float]]) -> list[tuple[int, int]]:
     return found[::-1]
 
 
-def _notes_on_words(melody: Melody) -> list[list[int]]:
+def notes_on_words(melody: Melody) -> list[list[int]]:
     """For each word, the notes sung on it, in order: those starting while it's sung (or just before or
     after), each on the word it overlaps most."""
     on = [[] for _ in melody.words]

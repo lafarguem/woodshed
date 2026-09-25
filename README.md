@@ -90,6 +90,7 @@ shed play harbor --rating   # your worst take, then your best (or --pitch, --tim
 shed play harbor -t 3       # take 3 (--take 3)
 shed reference ~/Music/harbor-lights.mp3  # rate a song's pitch against the original's melody
 shed reference harbor       # …or find the original on YouTube (needs yt-dlp, see below)
+shed drill harbor           # find the note each line starts on: it's played, then a tuner follows you
 shed devices                # microphones you can record from, and how they're connected
 shed init                   # change the folder, format, microphone, token or how takes are rated
 ```
@@ -315,6 +316,29 @@ off here. On 16 takes of a song by an amateur, which sat anywhere from 274¢ und
 - The closest lines are less sure: 6 of the 12 were among the other half's closest, and 1 was even often off
   there. That amateur sang 18% of their lines within 20¢ of where the rest of the take sat; the professional
   cover, 68%.
+
+### Finding the notes
+
+`shed drill harbor` helps you find the note each line of the song starts on, before you sing it. It needs the
+song's reference melody, and records nothing. The note the line's first word is sung on is played, then a tuner
+follows your voice until you've held it for a second: which note you're on, and which way to go.
+
+```
+$ shed drill harbor
+Harbor Lights  line 1 of 6
+“the lanterns swing above the harbor wall”
+Starts on “the”: D3
+
+  ──────●─────┼────────────
+  You: B2  higher ↑ (3 semitones under)
+
+←/→ another line · Space plays the note again · q quits
+```
+
+- The note is moved to the key your instrument played in your latest take (or `--transpose 3`: 3 semitones
+  above the original, `-2` under it), and to the octave your voice usually sits in, in your takes of the song.
+- Any octave of the note counts, as in the rating.
+- The microphone isn't listened to while the note plays, so the tuner doesn't take it for your voice.
 
 ## The library is just folders
 

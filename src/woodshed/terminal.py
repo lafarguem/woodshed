@@ -39,14 +39,17 @@ _KEYS = {
 
 
 @contextlib.contextmanager
-def keys() -> Iterator[Callable[[], str]]:
+def keys() -> Iterator[Callable[..., str | None]]:
     """Yield a function that waits for the next key press and names it:
-    "up", "down", "left", "right", "enter", "escape", or the character typed."""
+    "up", "down", "left", "right", "enter", "escape", or the character typed. Given a timeout (in seconds),
+    it waits no longer, and returns None if no key was pressed."""
     fd = sys.stdin.fileno()
     saved = termios.tcgetattr(fd)
     tty.setcbreak(fd)
 
-    def next_key() -> str:
+    def next_key(timeout: float | None = None) -> str | None:
+        if timeout is not None and not select.select([fd], [], [], timeout)[0]:
+            return None
         data = os.read(fd, 1)
         if data == b"\x1b" and select.select([fd], [], [], 0.05)[0]:  # an arrow key, not Escape alone
             data += os.read(fd, 2)

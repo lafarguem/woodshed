@@ -39,6 +39,7 @@ MELODY_LIMIT = 200  # the most a reference melody's 0/10 point can be set to, in
 MIN_REFERENCE_WORDS = 20  # fewer words heard in a reference recording, and there's no melody to follow
 AUDIO_SUFFIXES = frozenset({".aac", ".aif", ".aifc", ".aiff", ".caf", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav"})
 GENIUS_CLIENTS_URL = "https://genius.com/api-clients"
+RECENT_REGISTER = 5  # where your voice sits, for `shed drill`, is judged on your latest takes of the song
 
 LibraryOpt = Annotated[Path | None, typer.Option("--library", "-l", envvar="WOODSHED_DIR", show_default=False,
                                                  help="Folder holding your songs. [default: set by `shed init`]")]
@@ -349,6 +350,59 @@ def play(
         console.print(f"[green]▶[/green] [bold]{escape(song)}[/bold], {label}, recorded {_when(t.path)}{detail}")
         if not player.play(t.path, console):
             break
+
+
+@app.command()
+def drill(
+    name: Annotated[list[str] | None, typer.Argument(help="The song; part of its name is enough. Picked from a "
+                                                          "list if omitted.", show_default=False)] = None,
+    transpose: Annotated[int | None, typer.Option(min=-11, max=11, show_default=False,
+                                                  help="Semitones your instrument plays above the original "
+                                                       "(under it if negative). [default: as in your latest "
+                                                       "take]")] = None,
+    device: Annotated[str | None, typer.Option(envvar="WOODSHED_DEVICE", show_default=False,
+                                               help="Input device number or name (see `shed devices`).")] = None,
+    library: LibraryOpt = None,
+):
+    """Find the note each line starts on: it's played, then a tuner follows your voice. Nothing is recorded."""
+    import sounddevice as sd
+
+    from woodshed import drill as drilling
+
+    settings = config.load()
+    songs = _existing_library(library, settings)
+    if name:
+        song = _find_song(songs, " ".join(name))
+    else:
+        with_reference = [s for s in songs.songs() if songs.has_reference(s)]
+        if not with_reference or not _interactive():
+            console.print("Name the song to drill, e.g. shed drill harbor" if with_reference else
+                          "No song has a reference melody yet: set one with shed reference.")
+            raise typer.Exit(1)
+        song = with_reference[widgets.pick(console, with_reference)]
+    reference = _reference(songs, song)
+    if reference is None:
+        console.print(f"“{escape(song)}” has no reference melody to drill against. Set one with "
+                      f"[bold]shed reference {escape(shlex.quote(song))}[/bold].")
+        raise typer.Exit(1)
+    sung = [t.melody for t in songs.takes_of(song, melody=True) if t.melody]
+    if transpose is None:
+        compared = [c for c in (melody.compare(m, reference.melody) for m in sung[-1:]) if c and c.by_instrument]
+        shift = compared[0].shift if compared else 0
+    else:
+        shift = transpose  # its sign kept: without takes to find your register, -2 is 2 under, not 10 over
+    starts = drilling.starts(reference.melody, shift, drilling.register(sung[-RECENT_REGISTER:]))
+    if not starts:
+        console.print(f"No notes were found in the reference melody of “{escape(song)}”.")
+        raise typer.Exit(1)
+    device = device or settings.device
+    try:
+        drilling.run(console, starts, song, int(device) if device and device.isdigit() else device,
+                     melody.transposed(melody.Comparison(shift % 12, True, [])))
+    except (ValueError, sd.PortAudioError) as e:
+        console.print(f"[red]Can't listen to “{escape(device or 'your default microphone')}”: {escape(str(e))}."
+                      "[/red] Plug it in, or pick another microphone with `shed init` or --device.")
+        raise typer.Exit(1)
 
 
 @app.command()
