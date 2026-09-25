@@ -12,10 +12,13 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 from conftest import SONGS, add_take, mishear, recording
+from test_drill import harbor, voice  # noqa: F401 (a fixture)
+from test_melody import LINES, sing
 
-from woodshed import audio, cli, config, isolate, phone
+from woodshed import audio, cli, config, drill, isolate, phone
 from woodshed.library import Library
 
 
@@ -363,3 +366,65 @@ def test_the_phone_is_shown_the_lines_closest_to_the_melody_too(shed, phone_take
     assert [line["off"] for line in result["furthest"]] == ["100¢ under"]
     assert result["closest"][0] == {"time": "0:05", "text": LINES[1], "off": "0¢"}
     assert [line["text"] for line in result["closest"]] == [LINES[1], LINES[2], LINES[4]]  # at 0¢, and the first line 8¢ over
+
+
+@pytest.fixture
+def drilling(tmp_path, voice):
+    """`shed serve`'s server, able to drill Harbor Lights (the listener and pitch tracker made up: test_drill.py)."""
+    songs = Library(tmp_path / "lib")
+    cert, key, secret = phone.credentials(tmp_path / "phone")
+    remote = drill.Remote(harbor, ["Harbor Lights"])
+    running = phone.Server(songs, secret, cert, key, 0, lambda *take: None, drill=remote)
+    threading.Thread(target=running.serve_forever, daemon=True).start()
+    yield SimpleNamespace(port=running.server_address[1], secret=secret, voice=voice)
+    running.shutdown()
+    running.server_close()
+    remote.close()
+
+
+def drill_request(server, path, body=None, key=None):
+    headers = {"X-Woodshed-Key": server.secret if key is None else key}
+    if isinstance(body, dict):
+        body = json.dumps(body).encode()
+    status, answer = request(server, "POST" if body is not None or path != "/drill" else "GET", path, body, headers)
+    return status, json.loads(answer or b"{}")
+
+
+def test_the_page_drills_a_song(drilling):
+    status, answer = drill_request(drilling, "/drill")
+    assert status == 200 and answer["available"] and answer["songs"] == ["Harbor Lights"] and answer["state"] is None
+    assert drill_request(drilling, "/drill", key="guess")[0] == 403
+    assert drill_request(drilling, "/drill/audio", b"\0\0")[0] == 409  # nothing drilled yet
+    assert drill_request(drilling, "/drill", {"song": "Harbor Lights"})[0] == 400  # at what rate?
+    assert drill_request(drilling, "/drill", {"song": "Winter Town", "rate": 48_000})[0] == 404
+
+    status, answer = drill_request(drilling, "/drill", {"song": "Harbor Lights", "rate": 48_000})
+    assert status == 200 and answer["state"]["line"] == 1 and answer["state"]["played"] == 1
+    drilling.voice.note = answer["state"]["tone"]
+    for _ in range(12):  # a fifth of a second at a time, past the tone
+        status, answer = drill_request(drilling, "/drill/audio", np.full(9600, 3000, "<i2").tobytes())
+    assert status == 200 and answer["state"]["sung"]["advice"] == "on it"
+    assert drill_request(drilling, "/drill/audio", b"\0\0\0")[0] == 400  # not 16-bit samples
+
+    status, answer = drill_request(drilling, "/drill/line", {"step": 1})
+    assert status == 200 and answer["state"]["line"] == 2 and answer["state"]["played"] == 2
+    assert drill_request(drilling, "/drill/line", {"step": 2})[0] == 400
+    assert drill_request(drilling, "/drill/stop", b"")[0] == 200
+    assert drill_request(drilling, "/drill/line", {"step": 0})[0] == 409
+
+
+def test_a_server_without_a_drill_says_so(server):
+    status, answer = drill_request(server, "/drill")
+    assert status == 200 and not answer["available"] and answer["songs"] == []
+    assert drill_request(server, "/drill", {"song": "Harbor Lights", "rate": 48_000})[0] == 404
+
+
+def test_shed_serve_offers_to_drill_the_songs_with_a_reference(shed, monkeypatch, tone):
+    served = []
+    monkeypatch.setattr(phone, "Server", lambda *args, **kwargs: served.append(kwargs["drill"]) or FakeServer(*args))
+    add_take(shed.library, tone, "Harbor Lights", 2, 7, datetime(2026, 6, 1, 20, 0), LINES)
+    shed.library.set_reference("Harbor Lights", sing(), "original.mp3")
+
+    result = shed("serve")
+    assert served[0].titles == ["Harbor Lights"]
+    assert "Drill, on the page, finds the note each line starts on" in " ".join(result.output.split())

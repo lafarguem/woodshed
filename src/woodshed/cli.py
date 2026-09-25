@@ -392,15 +392,20 @@ def drill(
             prepared[title] = _drilled(songs, title, None)
         return prepared[title]
 
-    drillable = [s for s in with_reference if (r := _reference(songs, s)) and drilling.starts(r.melody)]
     device = device or settings.device
     try:
-        drilling.run(console, prepare, song, drillable,
+        drilling.run(console, prepare, song, _drillable(songs),
                      int(device) if device and device.isdigit() else device, language)
     except (ValueError, sd.PortAudioError) as e:
         console.print(f"[red]Can't listen to “{escape(device or 'your default microphone')}”: {escape(str(e))}."
                       "[/red] Plug it in, or pick another microphone with `shed init` or --device.")
         raise typer.Exit(1)
+
+
+def _drillable(songs: Library) -> list[str]:
+    """The songs with a reference melody that has notes to drill."""
+    return [s for s in songs.songs() if songs.has_reference(s) and (r := _reference(songs, s))
+            and drilling.starts(r.melody)]
 
 
 def _drilled(songs: Library, song: str, transpose: int | None) -> drilling.Song:
@@ -830,7 +835,8 @@ def serve(
     language: LanguageOpt = None,
 ):
     """Record from your phone: open the page this puts up on your Wi-Fi. Each take you record there is sent here and
-    filed, and the page shows how it rated (and asks which song it is, when that isn't clear)."""
+    filed, and the page shows how it rated (and asks which song it is, when that isn't clear). The page can drill a
+    song too, as `shed drill` does."""
     settings = _settings()
     songs = Library(library or Path(settings.library), settings.take_format)
     for stuck in songs.incoming.glob("*.wav.filing"):  # a `shed serve` stopped while filing it: waiting again
@@ -839,6 +845,9 @@ def serve(
     links = [f"https://{address}:{port}/?key={secret}" for address in phone.addresses()]
     session = phone.Session()
     filer = None if later else _PhoneFiler(songs, settings, session, language)
+    drill = drilling.Remote(lambda title: _drilled(songs, title, None), _drillable(songs), language,
+                            started=lambda title: console.print(f"[green]♪[/green] {datetime.now():%H:%M} Drilling "
+                                                                f"{escape(title)} from your phone"))
 
     def received(raw: Path, seconds: float, waiting: int) -> None:
         if filer:
@@ -849,10 +858,11 @@ def serve(
                           f"{waiting} waiting to be filed")
 
     try:
-        server = phone.Server(songs, secret, cert, key, port, received, session, filing=filer is not None)
+        server = phone.Server(songs, secret, cert, key, port, received, session, filing=filer is not None, drill=drill)
     except OSError as e:
         console.print(f"[red]Can't use port {port}: {escape(e.strerror or str(e))}.[/red] "
                       f"Try another: shed serve --port {port + 1}")
+        drill.close()
         raise typer.Exit(1)
     console.print("[bold]On your phone, open this page[/bold] (on the same Wi-Fi as this Mac):")
     console.print(_qr(links[0]))
@@ -870,6 +880,8 @@ def serve(
     else:
         console.print("The takes you record there wait here to be filed: file them with [bold]shed add[/bold]. "
                       "Ctrl+C stops.")
+    console.print("[dim]Drill, on the page, finds the note each line starts on, then follows you as you sing, as "
+                  "shed drill does.[/dim]")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -877,6 +889,7 @@ def serve(
     finally:
         server.server_close()
         session.stop()  # a question left unanswered: the take waits to be filed
+        drill.close()
         if filer:
             filer.takes.put(None)
             if filer.busy:

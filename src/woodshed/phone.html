@@ -43,11 +43,46 @@
                                                border: 1px solid var(--dim); background: var(--bg); color: var(--fg); }
   .take .choices form { display: flex; gap: 8px; }
   .take .choices input { flex: 1; min-width: 0; }
+  .tabs { display: flex; gap: 4px; background: var(--card); border-radius: 10px; padding: 3px; margin: 8px 0 18px; }
+  .tabs button { font: inherit; font-size: 15px; border: 0; border-radius: 8px; padding: 6px 22px; background: none;
+                 color: var(--dim); }
+  .tabs button.on { background: var(--bg); color: var(--fg); font-weight: 600; }
+  .view { display: flex; flex-direction: column; align-items: center; width: 100%; }
+  #drill-songs { display: flex; flex-direction: column; gap: 8px; width: min(420px, 94vw); }
+  #drill-songs button, .drill-actions button { font: inherit; padding: 11px 14px; border-radius: 10px;
+                                               border: 1px solid var(--dim); background: var(--card); color: var(--fg); }
+  #drill { width: min(420px, 94vw); text-align: center; }
+  #drill .dim, #drill-view .dim { color: var(--dim); }
+  #d-song { font-weight: 600; font-size: 19px; }
+  #d-news { color: var(--ok); font-weight: 600; margin-top: 4px; }
+  #d-text { font-size: 19px; margin: 14px 0 6px; font-style: italic; }
+  #d-note { font-weight: 700; font-size: 26px; }
+  #d-state { min-height: 1.5em; margin-top: 14px; }
+  #d-tuner { position: relative; height: 22px; margin: 14px 0 6px; }
+  #d-tuner::before { content: ""; position: absolute; left: 0; right: 0; top: 10px; height: 2px; background: var(--dim);
+                     opacity: .4; }
+  #d-tuner::after { content: ""; position: absolute; left: 50%; top: 2px; width: 2px; height: 18px;
+                    background: var(--dim); }
+  #d-dot { position: absolute; top: 3px; width: 16px; height: 16px; margin-left: -8px; border-radius: 50%; }
+  .near { color: #b7950b; }  .far { color: var(--accent); }  .on-it { color: var(--ok); }
+  #d-chart { margin: 18px auto 0; }
+  .columns { display: flex; align-items: flex-end; justify-content: center; gap: 4px; height: 96px; }
+  .columns div { width: 20px; border-radius: 3px 3px 0 0; background: var(--dim); opacity: .35; }
+  .columns div.where { opacity: 1; }
+  .columns div.melody { outline: 1px dashed var(--dim); outline-offset: 1px; }
+  .axis { display: flex; justify-content: space-between; width: 308px; margin: 4px auto 0; color: var(--dim);
+          font-size: 13px; border-top: 1px solid var(--dim); padding-top: 2px; }
+  #d-arrow { font-weight: 700; font-size: 18px; margin-top: 6px; min-height: 1.4em; }
+  .drill-actions { display: flex; gap: 10px; justify-content: center; margin-top: 22px; }
+  #d-stop { margin-top: 14px; }
   [hidden] { display: none !important; }
 </style>
 </head>
 <body>
   <h1>Woodshed</h1>
+  <div class="tabs"><button type="button" id="tab-record" class="on">Record</button><button type="button"
+    id="tab-drill">Drill</button></div>
+  <div class="view" id="record-view">
   <p class="hint">Each take you record here is sent to your Mac and filed under its song.</p>
   <button id="record" type="button">Record</button>
   <div id="clock">0:00</div>
@@ -58,6 +93,34 @@
     <a id="save" download>Save on the phone</a>
   </div>
   <div id="takes"></div>
+  </div>
+  <div class="view" id="drill-view" hidden>
+    <p class="hint" id="drill-hint">Find the note each line starts on: it's played, then sing it until you hold it.
+      Then sing the song, and see where you sit against the melody. Nothing is recorded.</p>
+    <div id="drill-songs"></div>
+    <div id="drill" hidden>
+      <div><span id="d-song"></span> <span id="d-line" class="dim"></span></div>
+      <div id="d-news"></div>
+      <div id="d-transposed" class="dim"></div>
+      <div id="d-text"></div>
+      <div id="d-starts">Starts on “<b id="d-word"></b>”: <span id="d-note"></span></div>
+      <div id="d-state"></div>
+      <div id="d-tuner" hidden><div id="d-dot"></div></div>
+      <div id="d-chart" hidden>
+        <div class="columns" id="d-columns"></div>
+        <div class="axis"><span>under</span><span>melody</span><span>over</span></div>
+        <div id="d-arrow"></div>
+      </div>
+      <div id="d-wait" class="dim"></div>
+      <div class="drill-actions" id="d-moves">
+        <button type="button" id="d-back">◀ Line</button>
+        <button type="button" id="d-again">♪ Again</button>
+        <button type="button" id="d-next">Line ▶</button>
+      </div>
+      <div class="drill-actions"><button type="button" id="d-stop">Stop</button></div>
+      <p class="dim">Say “switch to” and a song's name, your instrument quiet, to drill that one.</p>
+    </div>
+  </div>
 <script>
 "use strict";
 const key = new URLSearchParams(location.search).get("key");
@@ -270,6 +333,226 @@ function result(filed) {
   }
   return parts;
 }
+
+// Drilling a song: the microphone goes to the Mac a fifth of a second at a time, and what comes back is shown. The
+// line's note is played here, and what the microphone hears meanwhile is sent as silence: it's the tone, not you.
+const drilling = { context: null, stream: null, node: null, pieces: [], sending: false, timer: 0, played: 0,
+                   deafUntil: 0, wakeLock: null };
+const TONE_SECONDS = 1.5, AFTER_TONE = 0.3, SEND_EVERY = 200;
+
+function tab(drill) {
+  if (recorder) return;  // a take is being recorded
+  $("tab-record").classList.toggle("on", !drill);
+  $("tab-drill").classList.toggle("on", drill);
+  $("record-view").hidden = drill;
+  $("drill-view").hidden = !drill;
+  if (drill) songsToDrill(); else stopDrilling();
+}
+
+async function songsToDrill(why) {
+  $("drill").hidden = true;
+  $("drill-hint").hidden = false;
+  const list = $("drill-songs");
+  list.hidden = false;
+  list.replaceChildren(element("div", why || "", "dim"));
+  let answer;
+  try {
+    const response = await fetch("drill", { headers: { "X-Woodshed-Key": key }, cache: "no-store" });
+    answer = await response.json();
+  } catch (_) {
+    list.replaceChildren(element("div", "Your Mac didn't answer: is shed serve still running?", "dim"));
+    return;
+  }
+  if (!answer.available) {
+    list.replaceChildren(element("div", "This shed serve doesn't drill.", "dim"));
+    return;
+  }
+  if (!answer.songs.length) {
+    list.replaceChildren(element("div", "No song has a reference melody to drill against yet: set one on your Mac " +
+                                        "with shed reference.", "dim"));
+    return;
+  }
+  for (const song of answer.songs) {
+    const choice = element("button", song);
+    choice.type = "button";
+    choice.addEventListener("click", () => startDrilling(song));
+    list.append(choice);
+  }
+}
+
+async function startDrilling(song) {
+  stopDrilling();
+  const list = $("drill-songs");
+  try {
+    drilling.stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+  } catch (error) {
+    list.prepend(element("div", error.name === "NotAllowedError"
+      ? "The microphone isn't allowed: allow it for this page (the icon next to the address), then try again."
+      : `Can't use the microphone: ${error.message}`, "dim"));
+    return;
+  }
+  const context = drilling.context = new AudioContext();
+  await context.resume();
+  const source = context.createMediaStreamSource(drilling.stream);
+  const take = (samples) => {  // a piece of what the microphone heard
+    const deaf = context.currentTime < drilling.deafUntil;
+    drilling.pieces.push(deaf ? new Float32Array(samples.length) : samples);
+  };
+  if (context.audioWorklet) {
+    const code = `registerProcessor("tap", class extends AudioWorkletProcessor {
+      process(inputs) { if (inputs[0][0]) this.port.postMessage(inputs[0][0].slice(0)); return true; } });`;
+    await context.audioWorklet.addModule(URL.createObjectURL(new Blob([code], { type: "text/javascript" })));
+    drilling.node = new AudioWorkletNode(context, "tap");
+    drilling.node.port.onmessage = (event) => take(event.data);
+  } else {
+    drilling.node = context.createScriptProcessor(4096, 1, 1);
+    drilling.node.onaudioprocess = (event) => take(event.inputBuffer.getChannelData(0).slice(0));
+  }
+  const silent = context.createGain();
+  silent.gain.value = 0;
+  source.connect(drilling.node);
+  drilling.node.connect(silent).connect(context.destination);  // it only runs when connected
+  try { drilling.wakeLock = await navigator.wakeLock.request("screen"); } catch (_) { drilling.wakeLock = null; }
+  drilling.played = 0;
+  const answer = await drillRequest("drill", JSON.stringify({ song, rate: context.sampleRate }), "application/json");
+  if (!answer) return;
+  list.hidden = true;
+  $("drill-hint").hidden = true;
+  $("drill").hidden = false;
+  showDrill(answer.state);
+  drilling.timer = setInterval(sendHeard, SEND_EVERY);
+}
+
+function stopDrilling() {
+  clearInterval(drilling.timer);
+  if (drilling.stream) drilling.stream.getTracks().forEach((track) => track.stop());
+  if (drilling.context) drilling.context.close().catch(() => {});
+  if (drilling.wakeLock) drilling.wakeLock.release().catch(() => {});
+  if (drilling.context) {
+    fetch("drill/stop", { method: "POST", headers: { "X-Woodshed-Key": key } }).catch(() => {});
+  }
+  Object.assign(drilling, { context: null, stream: null, node: null, pieces: [], sending: false, timer: 0,
+                            wakeLock: null });
+}
+
+// Sends what's been heard since the last piece; one piece at a time, what's heard meanwhile goes with the next.
+async function sendHeard() {
+  if (drilling.sending || !drilling.pieces.length) return;
+  const pieces = drilling.pieces;
+  drilling.pieces = [];
+  const pcm = new Int16Array(pieces.reduce((n, piece) => n + piece.length, 0));
+  let at = 0;
+  for (const piece of pieces) {
+    for (const x of piece) pcm[at++] = Math.max(-32768, Math.min(32767, Math.round(x * 32768)));
+  }
+  drilling.sending = true;
+  const answer = await drillRequest("drill/audio", pcm.buffer, "application/octet-stream");
+  drilling.sending = false;
+  if (answer) showDrill(answer.state);
+}
+
+async function drillRequest(path, body, type) {
+  try {
+    const response = await fetch(path, { method: "POST", body,
+                                          headers: { "X-Woodshed-Key": key, "Content-Type": type } });
+    const answer = await response.json().catch(() => ({}));
+    if (response.ok) return answer;
+    stopDrilling();
+    songsToDrill(response.status === 409 ? "The drill stopped while the page was away: pick the song again."
+                                         : `Couldn't drill: ${answer.error || `the Mac answered ${response.status}`}.`);
+  } catch (_) {
+    $("d-wait").textContent = "Your Mac didn't answer: is shed serve still running, and the phone on the same Wi-Fi?";
+  }
+  return null;
+}
+
+function playTone(semitones) {
+  const context = drilling.context;
+  if (!context) return;
+  const now = context.currentTime, f = 440 * 2 ** (semitones / 12);
+  for (const [k, loudness] of [[1, 1], [2, 0.4], [3, 0.15]]) {  // as drill.tone() plays it
+    if (k * f >= context.sampleRate / 2) continue;
+    const oscillator = context.createOscillator(), gain = context.createGain();
+    oscillator.frequency.value = k * f;
+    gain.gain.setValueAtTime(0, now);
+    gain.gain.linearRampToValueAtTime(0.25 * loudness, now + 0.01);
+    gain.gain.setTargetAtTime(0, now + 0.01, TONE_SECONDS / 2);
+    oscillator.connect(gain).connect(context.destination);
+    oscillator.start(now);
+    oscillator.stop(now + TONE_SECONDS);
+  }
+  drilling.deafUntil = now + TONE_SECONDS + AFTER_TONE;
+}
+
+const farness = (off) => (Math.abs(off) < 0.5 ? "on-it" : Math.abs(off) < 1 ? "near" : "far");
+const sitting = (semitones) => (semitones === 0 ? "on-it" : Math.abs(semitones) === 1 ? "near" : "far");
+const colors = { "on-it": "var(--ok)", near: "#b7950b", far: "var(--accent)" };
+
+function showDrill(state) {
+  if (!state) return;
+  if (state.played !== drilling.played) {
+    drilling.played = state.played;
+    playTone(state.tone);
+  }
+  const listening = drilling.context && drilling.context.currentTime < drilling.deafUntil;
+  $("d-song").textContent = state.song;
+  $("d-line").textContent = state.singing ? "" : `line ${state.line} of ${state.lines}`;
+  $("d-news").textContent = state.news || "";
+  $("d-transposed").textContent = state.singing ? "" : state.transposed || "";
+  $("d-text").textContent = state.singing ? (state.sungLine ? `“${state.sungLine}”` : "") : `“${state.text}”`;
+  $("d-starts").hidden = state.singing;
+  $("d-word").textContent = state.word;
+  $("d-note").textContent = state.note;
+  const tuner = !state.singing && !listening && !state.found && state.sung;
+  $("d-tuner").hidden = !tuner;
+  const said = $("d-state");
+  said.className = "";
+  if (state.singing) said.textContent = "";
+  else if (listening) said.textContent = "♪ listen…";
+  else if (state.found) {
+    said.textContent = `✓ Found it: you held ${state.note}. Line ▶ for the next one.`;
+    said.className = "on-it";
+  } else if (!state.sung) said.textContent = "Sing the note…";
+  else {
+    const style = farness(state.sung.offset);
+    said.replaceChildren("You: ", element("b", state.sung.note), "  ", element("span", state.sung.advice, style));
+    const dot = $("d-dot");
+    dot.style.left = `${50 + Math.max(-6, Math.min(6, state.sung.offset)) / 12 * 100}%`;
+    dot.style.background = colors[style];
+  }
+  $("d-chart").hidden = !state.chart;
+  if (state.chart) {
+    const top = Math.max(1, ...state.chart.votes), where = state.chart.where;
+    const columns = state.chart.votes.map((n, i) => {
+      const column = element("div");
+      const semitones = i - 6;
+      column.style.height = n ? `${Math.max(6, (n / top) * 100)}%` : "0";
+      if (semitones === 0) column.classList.add("melody");
+      if (where !== null && semitones === where) {
+        column.classList.add("where");
+        column.style.background = colors[sitting(where)];
+      }
+      return column;
+    });
+    $("d-columns").replaceChildren(...columns);
+    const arrow = $("d-arrow");
+    arrow.textContent = where === null ? "" : where === 0 ? "✓" : where < 0 ? "▲ higher" : "▼ lower";
+    arrow.className = where === null ? "" : sitting(where);
+  }
+  $("d-wait").textContent = !state.ready ? "Getting ready to follow you as you sing…"
+    : !state.chart && !state.singing ? "Then sing the song: where you sit against the melody shows here." : "";
+}
+
+$("tab-record").addEventListener("click", () => tab(false));
+$("tab-drill").addEventListener("click", () => tab(true));
+for (const [id, step] of [["d-back", -1], ["d-again", 0], ["d-next", 1]]) {
+  $(id).addEventListener("click", async () => {
+    const answer = await drillRequest("drill/line", JSON.stringify({ step }), "application/json");
+    if (answer) showDrill(answer.state);
+  });
+}
+$("d-stop").addEventListener("click", () => { stopDrilling(); songsToDrill(); });
 
 button.addEventListener("click", () => (recorder ? stop() : start()));
 $("retry").addEventListener("click", () => unsent && send(unsent));

@@ -5,6 +5,9 @@ Woodshed's own, made the first time: your phone warns that it doesn't know it, a
 carries a secret, so that nobody else on the network can send takes. The takes join those waiting to be filed,
 as with `shed rec --later`, and the page follows them (a Session) as they're filed: asking which song one is,
 when that isn't clear, then showing how it rated.
+
+The page can also drill a song, as `shed drill` does (drill.Remote): it sends what its microphone hears, a fifth
+of a second at a time as 16-bit samples, and shows what comes back; it plays the line's note itself.
 """
 
 import hmac
@@ -22,13 +25,20 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, urlsplit
+
+import numpy as np
 
 from woodshed import audio
 from woodshed.library import Library
 
+if TYPE_CHECKING:
+    from woodshed.drill import Remote
+
 PORT = 8765
 MAX_UPLOAD_BYTES = 1 << 30  # about 9 hours, at the bitrate the page records at
+MAX_AUDIO_BYTES = 1 << 20  # of a drill's audio in one piece: 10 s at 48 kHz
 _KEY_HEADER = "X-Woodshed-Key"
 _SUFFIXES = {"audio/webm": ".webm", "audio/ogg": ".ogg", "audio/mp4": ".m4a", "audio/aac": ".aac",
              "audio/mpeg": ".mp3", "audio/wav": ".wav", "audio/x-wav": ".wav"}
@@ -151,13 +161,14 @@ def credentials(folder: Path) -> tuple[Path, Path, str]:
 
 
 class Server(ThreadingHTTPServer):
-    """The page, and the takes it sends: `received(raw, seconds, waiting)` is told of each one kept."""
+    """The page, and the takes it sends: `received(raw, seconds, waiting)` is told of each one kept. With `drill`,
+    the page can drill a song too."""
 
     daemon_threads = True
 
     def __init__(self, songs: Library, secret: str, cert: Path, key: Path, port: int,
                  received: Callable[[Path, float, int], None], session: Session | None = None, filing: bool = False,
-                 max_bytes: int = MAX_UPLOAD_BYTES):
+                 max_bytes: int = MAX_UPLOAD_BYTES, drill: "Remote | None" = None):
         super().__init__(("0.0.0.0", port), _Handler)
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.load_cert_chain(cert, key)
@@ -166,6 +177,7 @@ class Server(ThreadingHTTPServer):
         self.socket = context.wrap_socket(self.socket, server_side=True, do_handshake_on_connect=False)
         self.songs, self.secret, self.received, self.max_bytes = songs, secret, received, max_bytes
         self.session, self.filing = session or Session(), filing  # filing: they're filed here as they come
+        self.drill = drill
         self._naming = threading.Lock()
 
     def server_bind(self) -> None:
@@ -249,6 +261,12 @@ class _Handler(BaseHTTPRequestHandler):
             if not self._allowed(self.headers.get(_KEY_HEADER)):
                 return self._json(403, error="this isn't the link `shed serve` shows")
             return self._json(200, takes=self.server.session.takes(), filing=self.server.filing)
+        if url.path == "/drill":
+            if not self._allowed(self.headers.get(_KEY_HEADER)):
+                return self._json(403, error="this isn't the link `shed serve` shows")
+            drill = self.server.drill
+            return self._json(200, available=drill is not None, songs=drill.titles if drill else [],
+                              state=drill.state() if drill else None)
         if url.path != "/":
             return self._reply(404, "text/plain", b"Not found")
         if not self._allowed(parse_qs(url.query).get("key", [None])[0]):
@@ -262,6 +280,8 @@ class _Handler(BaseHTTPRequestHandler):
             return self._json(403, error="this isn't the link `shed serve` shows")
         if (answered := re.fullmatch(r"/takes/([^/]+)/answer", path)):
             return self._answer(answered[1])
+        if path.startswith("/drill"):
+            return self._drill(path)
         if path != "/takes":
             return self._json(404, error="not found")
         try:
@@ -278,13 +298,56 @@ class _Handler(BaseHTTPRequestHandler):
             return self._json(422, error=str(e))
         self._json(200, id=take, seconds=seconds, waiting=waiting)
 
-    def _answer(self, take: str) -> None:
-        """Which song a take is, from the phone."""
+    def _body(self, limit: int) -> bytes | None:
+        """What was sent, unless it's nothing or more than `limit` bytes."""
         try:
             length = int(self.headers.get("Content-Length") or 0)
-            answer = json.loads(self.rfile.read(length)) if 0 < length <= 4096 else None
         except ValueError:
-            answer = None
-        if not self.server.session.answer(take, answer):
+            return None
+        return self.rfile.read(length) if 0 < length <= limit else None
+
+    def _sent_json(self):
+        try:
+            return json.loads(self._body(4096) or b"")
+        except ValueError:
+            return None
+
+    def _answer(self, take: str) -> None:
+        """Which song a take is, from the phone."""
+        if not self.server.session.answer(take, self._sent_json()):
             return self._json(409, error="that take isn't waiting for an answer")
         self._json(200, ok=True)
+
+    def _drill(self, path: str) -> None:
+        """Drilling from the phone: starting a song (/drill), its audio (/drill/audio), another line or the note
+        again (/drill/line), stopping (/drill/stop). Each answers with what the page shows."""
+        drill = self.server.drill
+        if drill is None:
+            return self._json(404, error="this shed serve doesn't drill")
+        if path == "/drill/stop":
+            drill.stop()
+            return self._json(200, ok=True)
+        if path == "/drill":
+            asked = self._sent_json()
+            song, rate = (asked.get("song"), asked.get("rate")) if isinstance(asked, dict) else (None, None)
+            if not (isinstance(rate, int) and not isinstance(rate, bool) and 8000 <= rate <= 192_000):
+                return self._json(400, error="the page didn't say how fast its microphone samples")
+            try:
+                return self._json(200, state=drill.start(song, rate))
+            except ValueError:
+                return self._json(404, error="that song has no reference melody to drill against")
+        if path == "/drill/audio":
+            if (body := self._body(MAX_AUDIO_BYTES)) is None or len(body) % 2:
+                return self._json(400, error="that isn't the page's audio")
+            state = drill.hear(np.frombuffer(body, "<i2").astype(np.float32) / 32768)
+        elif path == "/drill/line":
+            asked = self._sent_json()
+            step = asked.get("step") if isinstance(asked, dict) else None
+            if step not in (-1, 0, 1) or isinstance(step, bool):
+                return self._json(400, error="that isn't a line to go to")
+            state = drill.go(step)
+        else:
+            return self._json(404, error="not found")
+        if state is None:
+            return self._json(409, error="nothing is being drilled: pick a song")
+        self._json(200, state=state)

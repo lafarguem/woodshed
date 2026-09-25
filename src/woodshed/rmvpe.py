@@ -175,22 +175,25 @@ def _device() -> str:
 
 
 @functools.cache
-def _model() -> tuple[E2E, torch.Tensor]:
+def _model(device: str) -> tuple[E2E, torch.Tensor]:
     import librosa
     from huggingface_hub import hf_hub_download
 
     model = E2E(4, 1, (2, 2))
     model.load_state_dict(torch.load(hf_hub_download(HF_REPO, WEIGHTS), map_location="cpu", weights_only=True))
-    model.eval().to(_device())
+    model.eval().to(device)
     mel_basis = librosa.filters.mel(sr=16000, n_fft=1024, n_mels=128, fmin=30, fmax=8000, htk=True)
-    return model, torch.from_numpy(mel_basis).float().to(_device())
+    return model, torch.from_numpy(mel_basis).float().to(device)
 
 
-def pitch(audio: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """(f0 in Hz, confidence 0-1) every 10 ms of 16 kHz mono audio."""
-    model, mel_basis = _model()
+def pitch(audio: np.ndarray, device: str | None = None) -> tuple[np.ndarray, np.ndarray]:
+    """(f0 in Hz, confidence 0-1) every 10 ms of 16 kHz mono audio. On the GPU unless `device` says otherwise:
+    two threads of a process using it at once crash it, so a second thread passes "cpu" (about 45 ms a second of
+    audio)."""
+    device = device or _device()
+    model, mel_basis = _model(device)
     with torch.no_grad():
-        x = torch.from_numpy(np.array(audio, dtype=np.float32)).to(_device())[None]
+        x = torch.from_numpy(np.array(audio, dtype=np.float32)).to(device)[None]
         spectrum = torch.stft(x, n_fft=1024, hop_length=160, win_length=1024,
                               window=torch.hann_window(1024, device=x.device), center=True, return_complex=True)
         mel = torch.log(torch.clamp(mel_basis @ spectrum.abs(), min=1e-5))

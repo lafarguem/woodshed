@@ -2,6 +2,7 @@
 and heard is checked through drill.py's parts, and the command up to where it would start listening."""
 
 from datetime import datetime
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -9,7 +10,7 @@ from conftest import add_take
 from test_melody import LINES, TUNE, sing
 from typer.testing import CliRunner
 
-from woodshed import cli, drill
+from woodshed import cli, drill, listen, rmvpe
 from woodshed.library import Library
 from woodshed.lyrics import words
 from woodshed.rating import Metrics
@@ -128,3 +129,86 @@ def test_a_song_needs_a_reference_to_drill(library, monkeypatch):
     assert result.exit_code == 1 and not run
     said = " ".join(result.output.split())  # undo the terminal's line wrapping
     assert "no reference melody" in said and "shed reference 'Winter Town'" in said
+
+
+class FakeListener:
+    """Stands in for listen.Listener: counts what it's fed, and hears nothing (no passes)."""
+
+    def __init__(self, rate, language=None):
+        self.rate, self.fed, self.ready = rate, [], True
+
+    @property
+    def now(self):
+        return sum(len(block) for block in self.fed) / self.rate
+
+    def feed(self, block):
+        self.fed.append(block)
+
+    def results(self):
+        return []
+
+    def close(self):
+        pass
+
+
+@pytest.fixture
+def voice(monkeypatch):
+    """What the pitch tracker hears: the note set (semitones from A440), wherever there's sound; the device it
+    was asked to run on."""
+    heard = SimpleNamespace(note=None, devices=[])
+
+    def pitch(samples, device=None):
+        heard.devices.append(device)
+        frames = len(samples) // 160 + 1
+        sounding = heard.note is not None and np.abs(samples).max() > 0
+        return np.full(frames, 440 * 2 ** ((heard.note or 0) / 12)), np.full(frames, 1.0 if sounding else 0.0)
+
+    monkeypatch.setattr(listen, "Listener", FakeListener)
+    monkeypatch.setattr(rmvpe, "pitch", pitch)
+    return heard
+
+
+def harbor(title="Harbor Lights"):
+    return drill.Song(title, sing(), 0, drill.starts(sing()), None)
+
+
+def test_the_tone_is_not_taken_for_your_voice_then_the_note_is_found(voice):
+    rate = 16_000
+    d = drill.Drill(harbor, "Harbor Lights", ["Harbor Lights"], rate)
+    d.play(0.0)
+    assert d.played == 1
+    voice.note = d.start.note  # the tone, heard by the microphone
+    now = 0.0
+    while now < drill.TONE_SECONDS + drill._AFTER_TONE:
+        d.feed(np.ones(rate // 10, np.float32), now)
+        now += 0.1
+        d.update(now)
+    assert d.sung is None and not d.found
+    assert all(block.max() == 0 for block in d.listener.fed)  # the listener doesn't hear it either
+    while now < 4.0:  # then you sing it
+        d.feed(np.ones(rate // 10, np.float32), now)
+        now += 0.1
+        d.update(now)
+    assert d.found and d.sung == pytest.approx(d.start.note)
+
+    d.go(1, now)
+    assert d.index == 1 and d.played == 2 and not d.found and d.sung is None
+
+
+def test_a_drill_can_run_somewhere_else(voice):
+    remote = drill.Remote(harbor, ["Harbor Lights"])
+    with pytest.raises(ValueError):
+        remote.start("Winter Town", 48_000)
+    state = remote.start("Harbor Lights", 48_000)
+    first = drill.starts(sing())[0]
+    assert state["song"] == "Harbor Lights" and state["line"] == 1 and state["lines"] == len(LINES)
+    assert state["note"] == drill.note_name(first.note) and state["played"] == 1 and state["listening"]
+    voice.note = first.note + 0.7
+    for _ in range(12):  # past the tone
+        state = remote.hear(np.full(9600, 0.1, np.float32))
+    assert not state["listening"] and state["sung"]["advice"] == "a little lower ↓ (70¢ over)"
+    assert set(voice.devices) == {"cpu"}  # filing a take has the GPU
+    assert remote.go(-1)["line"] == len(LINES)
+    remote.stop()
+    assert remote.state() is None and remote.hear(np.zeros(10, np.float32)) is None
+    remote.close()

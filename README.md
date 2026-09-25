@@ -123,6 +123,8 @@ order they arrive, so naming the first take of a new song lets the next ones be 
 
 - `shed serve --later` only receives the takes: they wait to be filed by `shed add`, as `shed rec --later`
   takes do.
+- The page's Drill tab drills a song with a reference melody, as `shed drill` does (see Finding the notes), from
+  the phone's microphone: the phone plays each line's note, and shows the tuner and the chart. Nothing is recorded.
 - Ctrl+C stops it. A take being filed is finished first; one whose song you haven't said yet waits for
   `shed add`, as does any take that couldn't be filed.
 - The page records music as it sounds: without the noise suppression, echo cancellation and automatic volume
@@ -366,6 +368,7 @@ Harbor Lights
   above the original, `-2` under it), and to the octave your voice usually sits in, in your takes of the song.
 - Any octave of the note counts, as in the rating.
 - The microphone isn't listened to while the note plays, so the tuner doesn't take it for your voice.
+- Away from the Mac, drill from your phone: `shed serve`, then the page's Drill tab.
 
 ## The library is just folders
 
