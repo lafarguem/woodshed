@@ -953,7 +953,7 @@ def _file_from_phone(raw: Path, songs: Library, settings: config.Config, session
     session.update(take, status="filed", result=_report(filed, config.load().references()))
 
 
-def _report(filed: Filed, references: rating.References) -> dict:
+def _report(filed: "Filed", references: rating.References) -> dict:
     """What the phone shows of a take once it's filed: what the terminal says, as plain text."""
     result = {"song": filed.song or lib.UNSORTED, "take": filed.number, "of": filed.count, "notes": [], "furthest": [],
               "closest": []}
