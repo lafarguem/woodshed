@@ -257,3 +257,18 @@ def test_a_chorus_sung_the_same_each_time_is_one_line():
     histories = melody.history(comparisons, chorus)
     assert [h.lines for h in histories] == [[0, 3], [1], [2], [4]]
     assert histories[0].cents == pytest.approx([-100] * 3) and melody.often_off(histories) == [histories[0]]
+
+
+def test_a_key_a_fifth_away_must_beat_the_original_clearly():
+    def played(shift, blur=0.0):  # the chords played `shift` semitones up, blurred with the original key's
+        take = sing(shift=shift, voice_shift=0)
+        chords = [np.add(c, np.multiply(blur, o)) for c, o in zip(take.chords, REFERENCE.chords)]
+        return Melody(take.lines, take.words, take.notes, [(c / np.linalg.norm(c)).tolist() for c in chords])
+
+    near = played(7, blur=0.85)
+    closeness = [np.mean(np.sum(np.array(near.chords) * np.roll(REFERENCE.chords, t, axis=1), axis=1))
+                 for t in (0, 7)]
+    assert 0 < closeness[1] - closeness[0] < melody.FIFTH_MARGIN  # the fifth is ahead, but not clearly
+    assert melody.compare(near, REFERENCE).shift == 0
+    assert melody.compare(played(7), REFERENCE).shift == 7  # a capo on the 7th fret
+    assert melody.compare(played(5), REFERENCE).shift == 5

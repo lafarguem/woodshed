@@ -11,8 +11,11 @@ With one, each note you sing is compared with the one the reference sings on the
 2. Your instrument may play in another key than the reference (a capo moved, the song transposed to suit
    your voice). The chords under the words that matched tell which: of the reference's chords moved to
    each of the 12 keys, the one closest to yours, word by word. That was right on all 16 takes it was tried
-   on, where comparing the chords over the whole song got 13. The melody is moved there too, so you're
-   judged against your instrument.
+   on, where comparing the chords over the whole song got 13. A key a fifth away (5 or 7 semitones) shares
+   all but one of its notes, and the fifth rings in each note's overtones, so it can edge out the original
+   one: it must beat it clearly (FIFTH_MARGIN). On takes of a song played in its original key, a fifth
+   edged it out by up to 0.058 a word; a capo moved leads by 0.18 or more. The melody is moved there too,
+   so you're judged against your instrument.
 3. The notes you hold on each matched word (100 ms or more) are compared in order with the reference's on
    the same word: cents from its note (the nearest semitone of its own tuning), moved to your key, measured
    from your instrument's tuning. Octaves are ignored (a man and a woman sing the same melody an octave
@@ -39,6 +42,7 @@ MIN_LINES = 3  # with fewer lines compared, the take's pitch is rated against th
 FAR_CENTS = 60  # lines this far from the melody are pointed out
 CLOSE_CENTS = 20  # and so are lines this close to it
 RECENT_TAKES = 8  # how the song's lines go is judged on the latest takes compared
+FIFTH_MARGIN = 0.1  # how much closer, per word, the chords must be a fifth away than in the original key
 OFTEN_OFF_CENTS = 50  # a line typically this far from the melody in those takes is pointed out (see history())
 _MIN_TAKES = 3  # takes that sang a line before it's judged
 _WORD_SLACK = 0.15  # a note starting this close to a word (in seconds) is sung on it
@@ -171,7 +175,10 @@ def compare(take: Melody, reference: Melody) -> Comparison | None:
     if by_instrument:
         mine = np.array([take.chords[k] for k, _ in pairs])
         theirs = np.array([reference.chords[l] for _, l in pairs])
-        shift = int(np.argmax([np.sum(mine * np.roll(theirs, t, axis=1)) for t in range(12)]))
+        closeness = np.array([np.sum(mine * np.roll(theirs, t, axis=1)) for t in range(12)]) / len(pairs)
+        shift = int(np.argmax(closeness))
+        if shift in (5, 7) and closeness[shift] - closeness[0] < FIFTH_MARGIN:
+            shift = 0
     else:  # no chords to go by: the key the voice fits best
         shift = int(np.argmax([np.mean(np.abs(offsets(t)) < 50) for t in range(12)]))
     off = offsets(shift)
