@@ -366,7 +366,7 @@ def drill(
     language: LanguageOpt = None,
     library: LibraryOpt = None,
 ):
-    """Find the note each line starts on, then sing: where you sit against the melody shows as you go.
+    """Find the note of each word, one by one, then sing: where you sit against the melody shows as you go.
     Say “switch to” and a song's name to change songs. Nothing is recorded."""
     import sounddevice as sd
 
@@ -405,7 +405,7 @@ def drill(
 def _drillable(songs: Library) -> list[str]:
     """The songs with a reference melody that has notes to drill."""
     return [s for s in songs.songs() if songs.has_reference(s) and (r := _reference(songs, s))
-            and drilling.starts(r.melody)]
+            and drilling.steps(r.melody)]
 
 
 def _drilled(songs: Library, song: str, transpose: int | None) -> drilling.Song:
@@ -422,11 +422,11 @@ def _drilled(songs: Library, song: str, transpose: int | None) -> drilling.Song:
         shift = compared[0].shift if compared else 0
     else:
         shift = transpose  # its sign kept: without takes to find your register, -2 is 2 under, not 10 over
-    starts = drilling.starts(reference.melody, shift, drilling.register(sung[-RECENT_REGISTER:]))
-    if not starts:
+    steps = drilling.steps(reference.melody, shift, drilling.register(sung[-RECENT_REGISTER:]))
+    if not steps:
         console.print(f"No notes were found in the reference melody of “{escape(song)}”.")
         raise typer.Exit(1)
-    return drilling.Song(song, reference.melody, shift, starts,
+    return drilling.Song(song, reference.melody, shift, steps,
                          melody.transposed(melody.Comparison(shift % 12, True, [])))
 
 
@@ -880,7 +880,7 @@ def serve(
     else:
         console.print("The takes you record there wait here to be filed: file them with [bold]shed add[/bold]. "
                       "Ctrl+C stops.")
-    console.print("[dim]Drill, on the page, finds the note each line starts on, then follows you as you sing, as "
+    console.print("[dim]Drill, on the page, finds the note of each word, one by one, then follows you as you sing, as "
                   "shed drill does.[/dim]")
     try:
         server.serve_forever()

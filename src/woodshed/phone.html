@@ -95,7 +95,7 @@
   <div id="takes"></div>
   </div>
   <div class="view" id="drill-view" hidden>
-    <p class="hint" id="drill-hint">Find the note each line starts on: it's played, then sing it until you hold it.
+    <p class="hint" id="drill-hint">Find the notes word by word: each is played, then sing it until you hold it.
       Then sing the song, and see where you sit against the melody. Nothing is recorded.</p>
     <div id="drill-songs"></div>
     <div id="drill" hidden>
@@ -103,7 +103,7 @@
       <div id="d-news"></div>
       <div id="d-transposed" class="dim"></div>
       <div id="d-text"></div>
-      <div id="d-starts">Starts on “<b id="d-word"></b>”: <span id="d-note"></span></div>
+      <div id="d-starts">“<b id="d-word"></b>” is sung on <span id="d-note"></span></div>
       <div id="d-state"></div>
       <div id="d-tuner" hidden><div id="d-dot"></div></div>
       <div id="d-chart" hidden>
@@ -113,9 +113,13 @@
       </div>
       <div id="d-wait" class="dim"></div>
       <div class="drill-actions" id="d-moves">
-        <button type="button" id="d-back">◀ Line</button>
+        <button type="button" id="d-back">◀ Word</button>
         <button type="button" id="d-again">♪ Again</button>
-        <button type="button" id="d-next">Line ▶</button>
+        <button type="button" id="d-next">Word ▶</button>
+      </div>
+      <div class="drill-actions" id="d-lines">
+        <button type="button" id="d-line-back">◀ Line</button>
+        <button type="button" id="d-line-next">Line ▶</button>
       </div>
       <div class="drill-actions"><button type="button" id="d-stop">Stop</button></div>
       <p class="dim">Say “switch to” and a song's name, your instrument quiet, to drill that one.</p>
@@ -497,10 +501,14 @@ function showDrill(state) {
   }
   const listening = drilling.context && drilling.context.currentTime < drilling.deafUntil;
   $("d-song").textContent = state.song;
-  $("d-line").textContent = state.singing ? "" : `line ${state.line} of ${state.lines}`;
+  $("d-line").textContent = state.singing ? "" : `word ${state.step} of ${state.steps}`;
   $("d-news").textContent = state.news || "";
   $("d-transposed").textContent = state.singing ? "" : state.transposed || "";
-  $("d-text").textContent = state.singing ? (state.sungLine ? `“${state.sungLine}”` : "") : `“${state.text}”`;
+  if (state.singing) $("d-text").textContent = state.sungLine ? `“${state.sungLine}”` : "";
+  else {
+    const parts = state.textParts.map(([part, sung]) => (sung ? element("u", part) : part));
+    $("d-text").replaceChildren("“", ...parts, "”");
+  }
   $("d-starts").hidden = state.singing;
   $("d-word").textContent = state.word;
   $("d-note").textContent = state.note;
@@ -509,9 +517,10 @@ function showDrill(state) {
   const said = $("d-state");
   said.className = "";
   if (state.singing) said.textContent = "";
-  else if (listening) said.textContent = "♪ listen…";
-  else if (state.found) {
-    said.textContent = `✓ Found it: you held ${state.note}. Line ▶ for the next one.`;
+  else if (listening) {
+    said.replaceChildren(...(state.held ? [element("span", `✓ You held ${state.held}. `, "on-it")] : []), "♪ listen…");
+  } else if (state.found) {
+    said.textContent = `✓ Found it: you held ${state.note}.`;
     said.className = "on-it";
   } else if (!state.sung) said.textContent = "Sing the note…";
   else {
@@ -546,9 +555,10 @@ function showDrill(state) {
 
 $("tab-record").addEventListener("click", () => tab(false));
 $("tab-drill").addEventListener("click", () => tab(true));
-for (const [id, step] of [["d-back", -1], ["d-again", 0], ["d-next", 1]]) {
+for (const [id, step, line] of [["d-back", -1, false], ["d-again", 0, false], ["d-next", 1, false],
+                                ["d-line-back", -1, true], ["d-line-next", 1, true]]) {
   $(id).addEventListener("click", async () => {
-    const answer = await drillRequest("drill/line", JSON.stringify({ step }), "application/json");
+    const answer = await drillRequest("drill/go", JSON.stringify({ step, line }), "application/json");
     if (answer) showDrill(answer.state);
   });
 }

@@ -399,18 +399,21 @@ def test_the_page_drills_a_song(drilling):
     assert drill_request(drilling, "/drill", {"song": "Winter Town", "rate": 48_000})[0] == 404
 
     status, answer = drill_request(drilling, "/drill", {"song": "Harbor Lights", "rate": 48_000})
-    assert status == 200 and answer["state"]["line"] == 1 and answer["state"]["played"] == 1
+    assert status == 200 and answer["state"]["step"] == 1 and answer["state"]["played"] == 1
     drilling.voice.note = answer["state"]["tone"]
     for _ in range(12):  # a fifth of a second at a time, past the tone
         status, answer = drill_request(drilling, "/drill/audio", np.full(9600, 3000, "<i2").tobytes())
     assert status == 200 and answer["state"]["sung"]["advice"] == "on it"
     assert drill_request(drilling, "/drill/audio", b"\0\0\0")[0] == 400  # not 16-bit samples
 
-    status, answer = drill_request(drilling, "/drill/line", {"step": 1})
-    assert status == 200 and answer["state"]["line"] == 2 and answer["state"]["played"] == 2
-    assert drill_request(drilling, "/drill/line", {"step": 2})[0] == 400
+    status, answer = drill_request(drilling, "/drill/go", {"step": 1})
+    assert status == 200 and answer["state"]["step"] == 2 and answer["state"]["played"] == 2
+    status, answer = drill_request(drilling, "/drill/go", {"step": 1, "line": True})
+    assert status == 200 and answer["state"]["line"] == 2 and answer["state"]["played"] == 3
+    assert drill_request(drilling, "/drill/go", {"step": 2})[0] == 400
+    assert drill_request(drilling, "/drill/go", {"step": 1, "line": "yes"})[0] == 400
     assert drill_request(drilling, "/drill/stop", b"")[0] == 200
-    assert drill_request(drilling, "/drill/line", {"step": 0})[0] == 409
+    assert drill_request(drilling, "/drill/go", {"step": 0})[0] == 409
 
 
 def test_a_server_without_a_drill_says_so(server):
@@ -427,4 +430,4 @@ def test_shed_serve_offers_to_drill_the_songs_with_a_reference(shed, monkeypatch
 
     result = shed("serve")
     assert served[0].titles == ["Harbor Lights"]
-    assert "Drill, on the page, finds the note each line starts on" in " ".join(result.output.split())
+    assert "Drill, on the page, finds the note of each word, one by one" in " ".join(result.output.split())

@@ -1,4 +1,4 @@
-"""Finding the note each line starts on: `shed drill`. The microphone and speakers are left out: what's played
+"""Finding the notes of a song word by word: `shed drill`. The microphone and speakers are left out: what's played
 and heard is checked through drill.py's parts, and the command up to where it would start listening."""
 
 from datetime import datetime
@@ -16,19 +16,39 @@ from woodshed.lyrics import words
 from woodshed.rating import Metrics
 
 
-def test_each_line_starts_on_its_first_note():
-    starts = drill.starts(sing())
-    assert [s.line for s in starts] == LINES
-    assert [s.word for s in starts] == [words(line)[0] for line in LINES]
-    assert [s.note for s in starts] == [line[0] for line in TUNE]
+def test_every_word_is_drilled_on_its_note():
+    steps = drill.steps(sing())
+    assert [(s.line, s.position, s.word) for s in steps] == [(line, i, w) for line in LINES
+                                                             for i, w in enumerate(words(line))]
+    assert [s.note for s in steps] == [note for line in TUNE for note in line]
+
+
+def test_a_word_with_no_note_is_skipped_but_the_others_keep_their_place():
+    take = sing()
+    take.notes = [n for n in take.notes if not 1.5 <= n[0] < 2.0]  # the second word's note
+    steps = drill.steps(take)
+    assert [s.position for s in steps[:2]] == [0, 2] and steps[1].word == words(LINES[0])[2]
+
+
+def test_up_and_down_go_to_the_start_of_another_line():
+    steps = drill.steps(sing())
+    first = [i for i, s in enumerate(steps) if s.position == 0]
+    assert drill.next_line(steps, first[0] + 2, 1) == first[1]
+    assert drill.next_line(steps, first[1] + 1, -1) == first[0]
+    assert drill.next_line(steps, first[0], -1) == first[-1]  # round to the last line
+
+
+def test_the_word_sung_is_shown_in_its_line():
+    assert drill.highlighted("don't let go", 1) == [("don't ", ""), ("let", "bold underline"), (" go", "")]
+    assert drill.highlighted("one", 3) == [("one", "")]
 
 
 def test_the_note_moves_to_your_key_and_your_register():
     first = TUNE[0][0]
-    assert drill.starts(sing(), shift=3)[0].note == first + 3
+    assert drill.steps(sing(), shift=3)[0].note == first + 3
     # Sung an octave or two away, the note is played where your voice sits.
-    assert drill.starts(sing(), register=first - 12)[0].note == first - 12
-    assert drill.starts(sing(), shift=3, register=first + 3 + 25)[0].note == first + 3 + 24
+    assert drill.steps(sing(), register=first - 12)[0].note == first - 12
+    assert drill.steps(sing(), shift=3, register=first + 3 + 25)[0].note == first + 3 + 24
     assert drill.register([sing(voice_shift=-12)]) == pytest.approx(np.median([n for line in TUNE for n in line]) - 12)
     assert drill.register([]) is None
 
@@ -107,11 +127,11 @@ def test_drills_in_the_key_and_register_of_your_latest_take(library, monkeypatch
     assert song.title == "Harbor Lights" and titles == ["Harbor Lights"]
     assert song.transposed == ("Your instrument plays 5 semitones over the reference, so the melody was moved to "
                                "match.")
-    assert song.shift == 5 and song.starts[0].note == TUNE[0][0] + 5 - 12
+    assert song.shift == 5 and song.steps[0].note == TUNE[0][0] + 5 - 12
 
     result, run = drilled(library, monkeypatch, "harbor", "--transpose", "-2")
     song = run[0][0]
-    assert song.starts[0].note % 12 == (TUNE[0][0] - 2) % 12
+    assert song.steps[0].note % 12 == (TUNE[0][0] - 2) % 12
     assert song.transposed == "Your instrument plays 2 semitones under the reference, so the melody was moved to match."
 
 
@@ -169,30 +189,40 @@ def voice(monkeypatch):
 
 
 def harbor(title="Harbor Lights"):
-    return drill.Song(title, sing(), 0, drill.starts(sing()), None)
+    return drill.Song(title, sing(), 0, drill.steps(sing()), None)
 
 
-def test_the_tone_is_not_taken_for_your_voice_then_the_note_is_found(voice):
+def sung_for(d, rate, now, until):
+    while now < until:
+        d.feed(np.ones(rate // 10, np.float32), now)
+        now += 0.1
+        d.update(now)
+    return now
+
+
+def test_the_tone_is_not_taken_for_your_voice_then_the_note_is_found_and_the_next_word_played(voice):
     rate = 16_000
     d = drill.Drill(harbor, "Harbor Lights", ["Harbor Lights"], rate)
     d.play(0.0)
     assert d.played == 1
-    voice.note = d.start.note  # the tone, heard by the microphone
-    now = 0.0
-    while now < drill.TONE_SECONDS + drill._AFTER_TONE:
-        d.feed(np.ones(rate // 10, np.float32), now)
-        now += 0.1
-        d.update(now)
+    first = d.step.note
+    voice.note = first  # the tone, heard by the microphone
+    now = sung_for(d, rate, 0.0, drill.TONE_SECONDS + drill._AFTER_TONE)
     assert d.sung is None and not d.found
     assert all(block.max() == 0 for block in d.listener.fed)  # the listener doesn't hear it either
-    while now < 4.0:  # then you sing it
-        d.feed(np.ones(rate // 10, np.float32), now)
-        now += 0.1
-        d.update(now)
-    assert d.found and d.sung == pytest.approx(d.start.note)
+    now = sung_for(d, rate, now, 4.0)  # then you sing it
+    assert d.index == 1 and d.played == 2 and d.held == drill.note_name(first)
+    assert not d.found and d.sung is None and not d.singing()
 
     d.go(1, now)
-    assert d.index == 1 and d.played == 2 and not d.found and d.sung is None
+    assert d.index == 2 and d.played == 3 and d.held is None
+    d.go(1, now, by_line=True)
+    assert d.step.line_number == 1 and d.step.position == 0
+
+    d.go(-1 - d.index, now)  # the last word: once it's found, you sing the song
+    voice.note = d.step.note
+    sung_for(d, rate, now, now + 4.0)
+    assert d.index == len(d.song.steps) - 1 and d.found and d.singing()
 
 
 def test_a_drill_can_run_somewhere_else(voice):
@@ -200,8 +230,9 @@ def test_a_drill_can_run_somewhere_else(voice):
     with pytest.raises(ValueError):
         remote.start("Winter Town", 48_000)
     state = remote.start("Harbor Lights", 48_000)
-    first = drill.starts(sing())[0]
-    assert state["song"] == "Harbor Lights" and state["line"] == 1 and state["lines"] == len(LINES)
+    first = drill.steps(sing())[0]
+    assert state["song"] == "Harbor Lights" and state["step"] == 1 and state["line"] == 1
+    assert state["steps"] == sum(len(words(line)) for line in LINES) and state["textParts"][1][1]
     assert state["note"] == drill.note_name(first.note) and state["played"] == 1 and state["listening"]
     voice.note = first.note + 0.7
     for _ in range(12):  # past the tone

@@ -1,9 +1,9 @@
-"""Finding the note a line starts on, before singing it, then where you sit against the melody as you sing
-(`shed drill`). Nothing is recorded.
+"""Finding the notes of a song word by word, before singing it, then where you sit against the melody as you
+sing (`shed drill`). Nothing is recorded.
 
-For each line of the song's reference melody, the note its first held word is sung on is played, then a tuner
-follows your voice until you've held that note for a second. Then you sing the song: the tuner goes (a key brings
-it back), and a chart
+For each word of the song's reference melody with a note held on it, that note is played, then a tuner follows
+your voice until you've held it for a second, and the next word's note is played. After the last word, you sing
+the song: the tuner goes (a key brings it back), and a chart
 of where your latest notes landed against the melody takes its place, a few seconds behind you (listen.py):
 nothing to read as you sing. Saying another song's name, your instrument quiet, drills that one. The phone can
 drill a song too, through `shed serve` (Remote): the same, shown on its page.
@@ -24,6 +24,7 @@ drill a song too, through `shed serve` (Remote): the same, shown on its page.
 """
 
 import queue
+import re
 import threading
 import time
 from collections.abc import Callable
@@ -61,26 +62,46 @@ IDLE_SECONDS = 30.0  # nothing heard from the phone this long, its page is close
 
 
 @dataclass
-class Start:
-    """Where one of the reference's lines starts."""
+class Step:
+    """One word of the reference with a note held on it."""
 
     line: str  # as heard in the reference
-    word: str  # the first word with a note held on it
-    note: int  # the note it's sung on, in semitones from A440, moved to your key and register
+    line_number: int  # in the reference
+    position: int  # which of the line's words it is, from 0
+    word: str
+    note: int  # the first note sung on it, in semitones from A440, moved to your key and register
 
 
-def starts(reference: Melody, shift: int = 0, register: float | None = None) -> list[Start]:
-    """For each of the reference's lines with a note held on one of its words, the first such note: moved
-    `shift` semitones, then to the octave nearest `register` (semitones from A440; None keeps the reference's)."""
+def steps(reference: Melody, shift: int = 0, register: float | None = None) -> list[Step]:
+    """Each of the reference's words with a note held on it, in order, and the first such note: moved `shift`
+    semitones, then to the octave nearest `register` (semitones from A440; None keeps the reference's)."""
     on = notes_on_words(reference)
-    found = {}
+    found, positions = [], {}
     for w, (word, _, _, line) in enumerate(reference.words):
-        if on[w] and line not in found:
+        position = positions[line] = positions.get(line, -1) + 1
+        if on[w]:
             note = round(reference.notes[on[w][0]][2]) + shift
             if register is not None:
                 note += 12 * round((register - note) / 12)
-            found[line] = Start(reference.lines[line], word, note)
-    return [found[line] for line in sorted(found)]
+            found.append(Step(reference.lines[line], line, position, word, note))
+    return found
+
+
+def next_line(steps: list[Step], index: int, way: int) -> int:
+    """The first step of the line after (`way` 1) or before (-1) the one step `index` is on, going round."""
+    starts = [i for i, s in enumerate(steps) if i == 0 or s.line_number != steps[i - 1].line_number]
+    here = next(n for n, i in enumerate(starts) if steps[i].line_number == steps[index].line_number)
+    return starts[(here + way) % len(starts)]
+
+
+def highlighted(line: str, position: int) -> list[tuple[str, str]]:
+    """The line in parts to show, its word at `position` in bold, if the line's words can be told apart as
+    lyrics.words() tells them."""
+    spans = [m.span() for m in re.finditer(r"\w+(?:['’]\w+)*", line)]
+    if position >= len(spans):
+        return [(line, "")]
+    start, end = spans[position]
+    return [(line[:start], ""), (line[start:end], "bold underline"), (line[end:], "")]
 
 
 def register(melodies: list[Melody]) -> float | None:
@@ -156,7 +177,7 @@ class Song:
     title: str
     reference: Melody
     shift: int  # semitones your instrument plays above the reference
-    starts: list[Start]
+    steps: list[Step]
     transposed: str | None  # said when shift isn't 0
 
 
@@ -201,9 +222,9 @@ def chart(offsets: list[float]) -> list["Text"]:
 
 
 class Drill:
-    """A song being drilled, whatever shows it (the terminal: run(); the phone: Remote): the line whose note
+    """A song being drilled, whatever shows it (the terminal: run(); the phone: Remote): the word whose note
     you're finding, what you sing against it, and where you sit as you sing the song. `now` is in seconds, on a
-    clock of the caller's choosing. `played` counts the times the line's note is to be played (play()), which the
+    clock of the caller's choosing. `played` counts the times the word's note is to be played (play()), which the
     caller does: first when it starts listening."""
 
     def __init__(self, prepare: Callable[[str], Song], title: str, titles: list[str], rate: int,
@@ -216,29 +237,38 @@ class Drill:
         self.follow = listen.Follow(self.song.reference, self.song.shift)
         self.heard = np.zeros(0, np.float32)  # the latest second from the microphone
         self.index, self.hold, self.found, self.sung = 0, Hold(), False, None
+        self.held: str | None = None  # the word before's note, just found: said while the next one plays
         self.sung_at = 0.0  # when `sung` was last read
-        self.back_at = 0.0  # when (listener.now) you last went back to a line's note: what was heard before is past
+        self.back_at = 0.0  # when (listener.now) you last went to a word's note: what was heard before is past
         self.deaf_until, self.news, self.news_until, self.played = 0.0, "", 0.0, 0
         self._last = now
 
     @property
-    def start(self) -> Start:
-        return self.song.starts[self.index]
+    def step(self) -> Step:
+        return self.song.steps[self.index]
 
     def play(self, now: float) -> None:
-        """The line's note is to be played: what's heard meanwhile is the tone, not you."""
+        """The word's note is to be played: what's heard meanwhile is the tone, not you."""
         self.played += 1
         self.deaf_until = now + TONE_SECONDS + _AFTER_TONE
 
-    def go(self, step: int, now: float) -> None:
-        """To the next line (1), the one before (-1), or back to this one's note (0): its note is played."""
-        self.index = (self.index + step) % len(self.song.starts)
+    def go(self, step: int, now: float, by_line: bool = False) -> None:
+        """To the next word (1), the one before (-1), or back to this one's note (0), or with `by_line` to the
+        start of the next line or the one before: its note is played."""
+        if by_line and step:
+            self.index = next_line(self.song.steps, self.index, step)
+        else:
+            self.index = (self.index + step) % len(self.song.steps)
+        self.held = None
+        self._listen_again(now)
+
+    def _listen_again(self, now: float) -> None:
         self.hold, self.found, self.sung, self.back_at = Hold(), False, None, self.listener.now
         self.play(now)
 
     def singing(self) -> bool:
-        """Whether you're singing the song: you found the line's note, so you went on, or the listener heard you
-        sing it (a few seconds behind). Until you go back to a line's note."""
+        """Whether you're singing the song: you found the last word's note, so you went on, or the listener heard
+        you sing it (a few seconds behind). Until you go to a word's note."""
         return self.found or self.follow.sung_at > max(self.back_at, self.listener.now - _SINGING_SECONDS)
 
     def feed(self, block: np.ndarray, now: float) -> None:
@@ -248,7 +278,8 @@ class Drill:
         self.listener.feed(block)
 
     def update(self, now: float) -> None:
-        """Takes in what the listener heard, and reads what you're singing against the line's note."""
+        """Takes in what the listener heard, and reads what you're singing against the word's note; once it's
+        found, goes on to the next word's, or after the last word, to the song."""
         from scipy.signal import resample_poly
 
         from woodshed import listen, rmvpe
@@ -258,19 +289,23 @@ class Drill:
             if asked:
                 self.song = self.prepare(asked)
                 self.follow = listen.Follow(self.song.reference, self.song.shift, since=result.end)
-                self.index, self.hold, self.found, self.sung = 0, Hold(), False, None
+                self.index, self.hold, self.found, self.sung, self.held = 0, Hold(), False, None, None
                 self.news, self.news_until = f"Switched to {asked}.", now + _NEWS_SECONDS
                 self.play(now)
         if (now >= self.deaf_until and len(self.heard) >= self.rate * (_READING_SECONDS + _LAG_SECONDS)
                 and not self.singing()):
             f0, confidence = rmvpe.pitch(level(resample_poly(self.heard, _RATE, self.rate)), self.pitch_device)
             now_sung = reading(f0, confidence, rmvpe.HOP_SECONDS)
-            self.found = self.hold.update(None if now_sung is None else offset(now_sung, self.start.note),
+            self.found = self.hold.update(None if now_sung is None else offset(now_sung, self.step.note),
                                           now - self._last)
             if now_sung is not None:
                 self.sung, self.sung_at = now_sung, now
             elif now - self.sung_at > _KEEP_SECONDS:
                 self.sung = None
+            if self.found and self.index + 1 < len(self.song.steps):
+                self.held = note_name(self.step.note)
+                self.index += 1
+                self._listen_again(now)
         elif now < self.deaf_until:
             self.heard = self.heard[:0]
         self._last = now
@@ -281,8 +316,8 @@ class Drill:
 
 def run(console, prepare: Callable[[str], Song], title: str, titles: list[str], device: int | str | None = None,
         language: str | None = None) -> None:
-    """Drill a song until q, Escape or Ctrl+C: its lines' starting notes, and where you sit against its melody as
-    you sing it. `prepare` gets a song ready, by its title, when another one in `titles` is asked for."""
+    """Drill a song until q, Escape or Ctrl+C: the notes of its words, one by one, and where you sit against its
+    melody as you sing it. `prepare` gets a song ready, by its title, when another one in `titles` is asked for."""
     import sounddevice as sd
     from rich.console import Group
     from rich.live import Live
@@ -299,11 +334,11 @@ def run(console, prepare: Callable[[str], Song], title: str, titles: list[str], 
     def sound():
         nonlocal played
         if drill.played != played:
-            sd.play(tone(drill.start.note, out_rate), out_rate)
+            sd.play(tone(drill.step.note, out_rate), out_rate)
             played = drill.played
 
     def render() -> Group:
-        song, follow, start, sung = drill.song, drill.follow, drill.start, drill.sung
+        song, follow, step, sung = drill.song, drill.follow, drill.step, drill.sung
         rows = [Text(song.title, "bold")]
         if time.monotonic() < drill.news_until:
             rows.append(Text(drill.news, "bold cyan"))
@@ -311,20 +346,19 @@ def run(console, prepare: Callable[[str], Song], title: str, titles: list[str], 
             if follow.line is not None:
                 rows.append(Text(f"“{song.reference.lines[follow.line]}”", "italic grey50"))
             return Group(*rows, Text(), *chart(follow.offsets), Text(), Text("q quits", "grey35"))
-        rows[0].append(f"  line {drill.index + 1} of {len(song.starts)}", "dim")
+        rows[0].append(f"  word {drill.index + 1} of {len(song.steps)}", "dim")
         if song.transposed:
             rows.append(Text(song.transposed, "dim"))
-        rows += [Text(f"“{start.line}”"),
-                 Text.assemble("Starts on “", (start.word, "bold"), "”: ", (note_name(start.note), "bold cyan")),
+        rows += [Text.assemble("“", *highlighted(step.line, step.position), "”"),
+                 Text.assemble("“", (step.word, "bold"), "” is sung on ", (note_name(step.note), "bold cyan")),
                  Text()]
         if time.monotonic() < drill.deaf_until:
-            rows.append(Text("♪ listen…", "cyan"))
-        elif drill.found:
-            rows.append(Text(f"✓ Found it: you held {note_name(start.note)}. → for the next line.", "bold green"))
+            held = ((f"✓ You held {drill.held}. ", "bold green"),) if drill.held else ()
+            rows.append(Text.assemble(*held, ("♪ listen…", "cyan")))
         elif sung is None:
             rows.append(Text("Sing the note…", "dim"))
         else:
-            off = offset(sung, start.note)
+            off = offset(sung, step.note)
             cells = ["─"] * _BAR_CELLS
             cells[_BAR_CELLS // 2] = "┼"
             cells[int(np.clip(round(off * 2) + _BAR_CELLS // 2, 0, _BAR_CELLS - 1))] = "●"
@@ -338,8 +372,8 @@ def run(console, prepare: Callable[[str], Song], title: str, titles: list[str], 
             rows += chart(follow.offsets)
         else:
             rows.append(Text("Then sing the song: where you sit against the melody shows here.", "dim"))
-        rows += [Text(), Text("←/→ another line · Space plays the note again · say a song's name to switch to "
-                              "it · q quits", "dim")]
+        rows += [Text(), Text("←/→ another word · ↑/↓ another line · Space plays the note again · say a song's "
+                              "name to switch to it · q quits", "dim")]
         return Group(*rows)
 
     stream = sd.InputStream(device=device, channels=1, samplerate=rate, dtype="float32",
@@ -355,7 +389,8 @@ def run(console, prepare: Callable[[str], Song], title: str, titles: list[str], 
                     if key in ("q", "escape"):
                         break
                     if key in ("left", "right", "up", "down", " "):
-                        drill.go(0 if key == " " else 1 if key in ("right", "down") else -1, time.monotonic())
+                        drill.go(0 if key == " " else 1 if key in ("right", "down") else -1, time.monotonic(),
+                                 by_line=key in ("up", "down"))
                         sound()
                     now = time.monotonic()
                     while not blocks.empty():
@@ -411,12 +446,12 @@ class Remote:
             self._heard_at = time.monotonic()
         return self.state()
 
-    def go(self, step: int) -> dict | None:
+    def go(self, step: int, by_line: bool = False) -> dict | None:
         """As Drill.go(); None if nothing is being drilled."""
         with self._lock:
             if not (drill := self._drill):
                 return None
-            drill.go(step, drill.listener.now)
+            drill.go(step, drill.listener.now, by_line)
         return self.state()
 
     def state(self) -> dict | None:
@@ -424,13 +459,14 @@ class Remote:
         with self._lock:
             if not (drill := self._drill):
                 return None
-            now, start, song, follow = drill.listener.now, drill.start, drill.song, drill.follow
-            off = None if drill.sung is None else offset(drill.sung, start.note)
+            now, step, song, follow = drill.listener.now, drill.step, drill.song, drill.follow
+            off = None if drill.sung is None else offset(drill.sung, step.note)
             votes, where = landed(follow.offsets)
-            return {"song": song.title, "transposed": song.transposed, "line": drill.index + 1,
-                    "lines": len(song.starts), "text": start.line, "word": start.word, "note": note_name(start.note),
-                    "tone": start.note, "played": drill.played, "listening": now < drill.deaf_until,
-                    "found": drill.found, "ready": drill.listener.ready, "singing": drill.singing(),
+            return {"song": song.title, "transposed": song.transposed, "step": drill.index + 1,
+                    "steps": len(song.steps), "line": step.line_number + 1, "text": step.line,
+                    "textParts": [[part, bool(style)] for part, style in highlighted(step.line, step.position)],
+                    "word": step.word, "note": note_name(step.note), "tone": step.note, "played": drill.played,
+                    "listening": now < drill.deaf_until, "held": drill.held, "found": drill.found, "ready": drill.listener.ready, "singing": drill.singing(),
                     "sung": None if off is None else {"note": note_name(drill.sung), "offset": round(off, 3),
                                                       "advice": advice(off)},
                     "sungLine": None if follow.line is None else song.reference.lines[follow.line],

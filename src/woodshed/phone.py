@@ -7,7 +7,7 @@ as with `shed rec --later`, and the page follows them (a Session) as they're fil
 when that isn't clear, then showing how it rated.
 
 The page can also drill a song, as `shed drill` does (drill.Remote): it sends what its microphone hears, a fifth
-of a second at a time as 16-bit samples, and shows what comes back; it plays the line's note itself.
+of a second at a time as 16-bit samples, and shows what comes back; it plays the word's note itself.
 """
 
 import hmac
@@ -319,8 +319,8 @@ class _Handler(BaseHTTPRequestHandler):
         self._json(200, ok=True)
 
     def _drill(self, path: str) -> None:
-        """Drilling from the phone: starting a song (/drill), its audio (/drill/audio), another line or the note
-        again (/drill/line), stopping (/drill/stop). Each answers with what the page shows."""
+        """Drilling from the phone: starting a song (/drill), its audio (/drill/audio), another word or line, or
+        the note again (/drill/go), stopping (/drill/stop). Each answers with what the page shows."""
         drill = self.server.drill
         if drill is None:
             return self._json(404, error="this shed serve doesn't drill")
@@ -340,12 +340,12 @@ class _Handler(BaseHTTPRequestHandler):
             if (body := self._body(MAX_AUDIO_BYTES)) is None or len(body) % 2:
                 return self._json(400, error="that isn't the page's audio")
             state = drill.hear(np.frombuffer(body, "<i2").astype(np.float32) / 32768)
-        elif path == "/drill/line":
+        elif path == "/drill/go":
             asked = self._sent_json()
-            step = asked.get("step") if isinstance(asked, dict) else None
-            if step not in (-1, 0, 1) or isinstance(step, bool):
-                return self._json(400, error="that isn't a line to go to")
-            state = drill.go(step)
+            step, by_line = (asked.get("step"), asked.get("line", False)) if isinstance(asked, dict) else (None, None)
+            if step not in (-1, 0, 1) or isinstance(step, bool) or not isinstance(by_line, bool):
+                return self._json(400, error="that isn't a word or line to go to")
+            state = drill.go(step, by_line)
         else:
             return self._json(404, error="not found")
         if state is None:

@@ -90,7 +90,7 @@ shed play harbor --rating   # your worst take, then your best (or --pitch, --tim
 shed play harbor -t 3       # take 3 (--take 3)
 shed reference ~/Music/harbor-lights.mp3  # rate a song's pitch against the original's melody
 shed reference harbor       # …or find the original on YouTube (needs yt-dlp, see below)
-shed drill harbor           # find the note each line starts on, then sing: where you sit against the melody shows
+shed drill harbor           # find the note of each word, one by one, then sing: where you sit against the melody shows
 shed devices                # microphones you can record from, and how they're connected
 shed init                   # change the folder, format, microphone, token or how takes are rated
 ```
@@ -124,7 +124,7 @@ order they arrive, so naming the first take of a new song lets the next ones be 
 - `shed serve --later` only receives the takes: they wait to be filed by `shed add`, as `shed rec --later`
   takes do.
 - The page's Drill tab drills a song with a reference melody, as `shed drill` does (see Finding the notes), from
-  the phone's microphone: the phone plays each line's note, and shows the tuner and the chart. Nothing is recorded.
+  the phone's microphone: the phone plays each word's note, and shows the tuner and the chart. Nothing is recorded.
 - Ctrl+C stops it. A take being filed is finished first; one whose song you haven't said yet waits for
   `shed add`, as does any take that couldn't be filed.
 - The page records music as it sounds: without the noise suppression, echo cancellation and automatic volume
@@ -324,21 +324,22 @@ off here. On 16 takes of a song by an amateur, which sat anywhere from 274¢ und
 `shed drill harbor` helps you find the notes of a song, and records nothing. It needs the song's reference
 melody.
 
-Before you sing a line, it plays the note the line's first word is sung on, then a tuner follows your voice
-until you've held it for a second: which note you're on, and which way to go.
+Word by word, it plays the note the word is sung on, then a tuner follows your voice until you've held it for
+a second: which note you're on, and which way to go. Then it plays the next word's note. ←/→ go to another
+word, ↑/↓ to the start of another line, and Space plays the note again.
 
 ```
 $ shed drill harbor
-Harbor Lights  line 1 of 6
+Harbor Lights  word 3 of 48
 “the lanterns swing above the harbor wall”
-Starts on “the”: D3
+“swing” is sung on D3
 
   ──────●─────┼────────────
   You: B2  higher ↑ (3 semitones under)
 ```
 
-Then sing the song: nothing stops you. Once you've found the note, or it hears you sing, the tuner goes (←/→ or
-Space bring it back), and in its place a chart shows where your latest 15
+Then sing the song: nothing stops you. Once you've found the last word's note, or it hears you sing, the tuner
+goes (a key brings it back), and in its place a chart shows where your latest 15
 notes landed against the melody, a column for each semitone from 6 under to 6 over, so you can see at a glance
 when you've drifted a whole key away from it, and when you're back. The column most of them landed in is green on
 the melody, yellow a semitone off, red further, with an arrow saying which way to go.
