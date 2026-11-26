@@ -191,18 +191,6 @@ def compare(take: Melody, reference: Melody) -> Comparison | None:
     return Comparison(shift, by_instrument, lines, passages)
 
 
-def note_offsets(take: Melody, reference: Melody, shift: int) -> list[tuple[float, int, float]]:
-    """Each note of the take compared with the melody moved `shift` semitones: (when it starts, the reference's
-    line it's sung on, how far off it is in semitones, octaves ignored: under the melody if negative), in order.
-    For a stretch too short to tell the key from (`shed drill` listening as you sing), the key is given."""
-    compared = _compared(take, reference, align(take.words, reference.words))
-    if compared is None:
-        return []
-    _, their_word, sung, pitch, target = compared
-    return [(take.notes[n][0], reference.words[l][3], float((p - (t + shift) + 6) % 12 - 6))
-            for n, l, p, t in zip(sung, their_word, pitch, target)]
-
-
 def _compared(take: Melody, reference: Melody, pairs: list[tuple[int, int]]) -> tuple[np.ndarray, ...] | None:
     """The notes held on the words heard as the same: (take word, reference word, take note, its pitch, the
     reference's note, to the nearest semitone), a row each; None if there are none."""

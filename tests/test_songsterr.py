@@ -13,7 +13,7 @@ import pytest
 from test_reference import harbor, set_reference, text  # noqa: F401 (a fixture)
 from test_tab import heard
 
-from woodshed import along, songsterr, tab
+from woodshed import songsterr, tab
 
 GUITAR = [64, 59, 55, 50, 45, 40]  # the highest string first, as Songsterr lists them
 SENT = {"songId": 27, "revisionId": 5184162, "image": "v5-2-1-GEwclkOmjsFXZOxQ", "title": "Harbor Lights",

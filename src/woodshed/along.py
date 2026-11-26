@@ -37,6 +37,8 @@ SURE = 0.5  # how sure the tracker is of a voice, for it to be drawn plainly…
 FAINT = 0.2  # …and faintly
 _RATE = 16_000  # what the pitch tracker takes
 _MIN_SECONDS = 0.2  # heard before the first reading
+_LOUDNESS = 0.1  # what's heard is brought to this RMS level (-20 dBFS)…
+_MAX_GAIN = 100.0  # …by at most 40 dB
 
 
 def contour(track) -> list[float | None]:
@@ -64,7 +66,6 @@ class Live:
         from scipy.signal import resample_poly
 
         from woodshed import rmvpe
-        from woodshed.drill import level
 
         self._heard += len(samples)
         self._audio = np.concatenate([self._audio, samples])[-int((WINDOW_SECONDS + 0.02) * self.rate):]
@@ -163,3 +164,16 @@ class Session:
     def stop(self) -> None:
         with self._lock:
             self._live = None
+
+
+def level(samples: np.ndarray) -> np.ndarray:
+    """The samples brought to the same loudness, however far you are from the microphone."""
+    rms = float(np.sqrt(np.mean(samples**2))) if len(samples) else 0.0
+    return (samples * min(_LOUDNESS / max(rms, 1e-9), _MAX_GAIN)).astype(np.float32)
+
+
+def register(melodies: list) -> float | None:
+    """Where your voice usually sits in these takes (melody.Melody): the median of their notes, in semitones from
+    A440."""
+    notes = [note[2] for m in melodies for note in m.notes]
+    return float(np.median(notes)) if notes else None

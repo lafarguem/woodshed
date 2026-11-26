@@ -25,7 +25,6 @@ from rich.table import Table
 from rich.text import Text
 
 from woodshed import audio, config, genius, library as lib, melody, microphones, models, phone, rating, widgets, youtube
-from woodshed import drill as drilling
 from woodshed.library import Library, Take
 
 # Recognition runs offline; `shed init` downloads the models it needs.
@@ -40,7 +39,7 @@ MELODY_LIMIT = 200  # the most a reference melody's 0/10 point can be set to, in
 MIN_REFERENCE_WORDS = 20  # fewer words heard in a reference recording, and there's no melody to follow
 AUDIO_SUFFIXES = frozenset({".aac", ".aif", ".aifc", ".aiff", ".caf", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav"})
 GENIUS_CLIENTS_URL = "https://genius.com/api-clients"
-RECENT_REGISTER = 5  # where your voice sits, for `shed drill`, is judged on your latest takes of the song
+RECENT_REGISTER = 5  # where your voice sits, to sing along, is judged on your latest takes of the song
 
 LibraryOpt = Annotated[Path | None, typer.Option("--library", "-l", envvar="WOODSHED_DIR", show_default=False,
                                                  help="Folder holding your songs. [default: set by `shed init`]")]
@@ -353,83 +352,6 @@ def play(
             break
 
 
-@app.command()
-def drill(
-    name: Annotated[list[str] | None, typer.Argument(help="The song; part of its name is enough. Picked from a "
-                                                          "list if omitted.", show_default=False)] = None,
-    transpose: Annotated[int | None, typer.Option(min=-11, max=11, show_default=False,
-                                                  help="Semitones your instrument plays above the original "
-                                                       "(under it if negative). [default: as in your latest "
-                                                       "take]")] = None,
-    device: Annotated[str | None, typer.Option(envvar="WOODSHED_DEVICE", show_default=False,
-                                               help="Input device number or name (see `shed devices`).")] = None,
-    language: LanguageOpt = None,
-    library: LibraryOpt = None,
-):
-    """Find the note of each word, one by one, then sing: where you sit against the melody shows as you go.
-    Say “switch to” and a song's name to change songs. Nothing is recorded."""
-    import sounddevice as sd
-
-    settings = config.load()
-    songs = _existing_library(library, settings)
-    with_reference = [s for s in songs.songs() if songs.has_reference(s)]
-    if name:
-        song = _find_song(songs, " ".join(name))
-    else:
-        if not with_reference or not _interactive():
-            console.print("Name the song to drill, e.g. shed drill harbor" if with_reference else
-                          "No song has a reference melody yet: set one with shed reference.")
-            raise typer.Exit(1)
-        song = with_reference[widgets.pick(console, with_reference)]
-    first = _drilled(songs, song, transpose)
-    if missing := models.missing():
-        console.print(f"[yellow]{_not_downloaded(missing)} Run `shed init` to download.[/yellow]")
-        raise typer.Exit(1)
-    prepared = {song: first}
-
-    def prepare(title: str) -> drilling.Song:  # another song, asked for as you drill: in the key you last played it
-        if title not in prepared:
-            prepared[title] = _drilled(songs, title, None)
-        return prepared[title]
-
-    device = device or settings.device
-    try:
-        drilling.run(console, prepare, song, _drillable(songs),
-                     int(device) if device and device.isdigit() else device, language)
-    except (ValueError, sd.PortAudioError) as e:
-        console.print(f"[red]Can't listen to “{escape(device or 'your default microphone')}”: {escape(str(e))}."
-                      "[/red] Plug it in, or pick another microphone with `shed init` or --device.")
-        raise typer.Exit(1)
-
-
-def _drillable(songs: Library) -> list[str]:
-    """The songs with a reference melody that has notes to drill."""
-    return [s for s in songs.songs() if songs.has_reference(s) and (r := _reference(songs, s))
-            and drilling.steps(r.melody)]
-
-
-def _drilled(songs: Library, song: str, transpose: int | None) -> drilling.Song:
-    """The song ready to drill, in the key given or, by default, the one your latest take of it was played in;
-    stops if it has no reference melody, or none of its notes were found."""
-    reference = _reference(songs, song)
-    if reference is None:
-        console.print(f"“{escape(song)}” has no reference melody to drill against. Set one with "
-                      f"[bold]shed reference {escape(shlex.quote(song))}[/bold].")
-        raise typer.Exit(1)
-    sung = [t.melody for t in songs.takes_of(song, melody=True) if t.melody]
-    if transpose is None:
-        compared = [c for c in (melody.compare(m, reference.melody) for m in sung[-1:]) if c and c.by_instrument]
-        shift = compared[0].shift if compared else 0
-    else:
-        shift = transpose  # its sign kept: without takes to find your register, -2 is 2 under, not 10 over
-    steps = drilling.steps(reference.melody, shift, drilling.register(sung[-RECENT_REGISTER:]))
-    if not steps:
-        console.print(f"No notes were found in the reference melody of “{escape(song)}”.")
-        raise typer.Exit(1)
-    return drilling.Song(song, reference.melody, shift, steps,
-                         melody.transposed(melody.Comparison(shift % 12, True, [])))
-
-
 def _sung_along(songs: Library) -> list[str]:
     """The songs whose reference keeps what singing along takes."""
     return [s for s in songs.songs() if songs.has_reference(s) and (r := songs.reference(s)) and r.sung_along]
@@ -442,7 +364,7 @@ def _to_sing_along(songs: Library, song: str) -> "along.Song":
     reference = songs.reference(song)
     sung = [t.melody for t in songs.takes_of(song, melody=True) if t.melody]
     return along.Song(song, along.lines(reference.melody), reference.contour,
-                      along.octaves(reference.contour, drilling.register(sung[-RECENT_REGISTER:])),
+                      along.octaves(reference.contour, along.register(sung[-RECENT_REGISTER:])),
                       reference.band, reference.voice, reference.tab["notes"] if reference.tab else None)
 
 
@@ -984,9 +906,8 @@ def serve(
     language: LanguageOpt = None,
 ):
     """Record from your phone: open the page this puts up on your Wi-Fi. Each take you record there is sent here and
-    filed, and the page shows how it rated (and asks which song it is, when that isn't clear). The page can drill a
-    song too, as `shed drill` does, and play a song's reference recording to sing along to, your pitch drawn over
-    its melody."""
+    filed, and the page shows how it rated (and asks which song it is, when that isn't clear). It can also play a
+    song's reference recording to sing along to, your pitch drawn over its melody."""
     settings = _settings()
     songs = Library(library or Path(settings.library), settings.take_format)
     for stuck in songs.incoming.glob("*.wav.filing"):  # a `shed serve` stopped while filing it: waiting again
@@ -995,10 +916,6 @@ def serve(
     links = [f"https://{address}:{port}/?key={secret}" for address in phone.addresses()]
     session = phone.Session()
     filer = None if later else _PhoneFiler(songs, settings, session, language)
-    drill = drilling.Remote(lambda title: _drilled(songs, title, None), _drillable(songs), language,
-                            started=lambda title: console.print(f"[green]♪[/green] {datetime.now():%H:%M} Drilling "
-                                                                f"{escape(title)} from your phone"))
-
     from woodshed import along
 
     sing = along.Session(lambda title: _to_sing_along(songs, title), _sung_along(songs),
@@ -1014,12 +931,10 @@ def serve(
                           f"{waiting} waiting to be filed")
 
     try:
-        server = phone.Server(songs, secret, cert, key, port, received, session, filing=filer is not None, drill=drill,
-                              sing=sing)
+        server = phone.Server(songs, secret, cert, key, port, received, session, filing=filer is not None, sing=sing)
     except OSError as e:
         console.print(f"[red]Can't use port {port}: {escape(e.strerror or str(e))}.[/red] "
                       f"Try another: shed serve --port {port + 1}")
-        drill.close()
         raise typer.Exit(1)
     console.print("[bold]On your phone, open this page[/bold] (on the same Wi-Fi as this Mac):")
     console.print(_qr(links[0]))
@@ -1037,8 +952,6 @@ def serve(
     else:
         console.print("The takes you record there wait here to be filed: file them with [bold]shed add[/bold]. "
                       "Ctrl+C stops.")
-    console.print("[dim]Drill, on the page, finds the note of each word, one by one, then follows you as you sing, as "
-                  "shed drill does.[/dim]")
     if sing.titles:
         console.print("[dim]Sing, on the page, plays a song's reference recording in your headphones, and draws your "
                       "pitch over its melody as you sing along.[/dim]")
@@ -1053,7 +966,6 @@ def serve(
     finally:
         server.server_close()
         session.stop()  # a question left unanswered: the take waits to be filed
-        drill.close()
         if filer:
             filer.takes.put(None)
             if filer.busy:

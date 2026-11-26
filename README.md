@@ -92,8 +92,7 @@ shed reference ~/Music/harbor-lights.mp3  # rate a song's pitch against the orig
 shed reference harbor       # …or find the original on YouTube (needs yt-dlp, see below)
 shed reference harbor --songsterr  # sing along to the notes of Songsterr's tab of it (see Singing along)
 shed reference harbor --tab ~/Downloads/harbor.gp  # …or of a Guitar Pro file
-shed drill harbor           # find the note of each word, one by one, then sing: where you sit against the melody shows
-shed serve                  # …or sing along to the original on the page's Sing tab, your pitch drawn over its melody
+shed serve                  # …and sing along to the original on the page's Sing tab, your pitch drawn over its melody
 shed devices                # microphones you can record from, and how they're connected
 shed init                   # change the folder, format, microphone, token or how takes are rated
 ```
@@ -126,8 +125,6 @@ order they arrive, so naming the first take of a new song lets the next ones be 
 
 - `shed serve --later` only receives the takes: they wait to be filed by `shed add`, as `shed rec --later`
   takes do.
-- The page's Drill tab drills a song with a reference melody, as `shed drill` does (see Finding the notes), from
-  the phone's microphone: the phone plays each word's note, and shows the tuner and the chart. Nothing is recorded.
 - The page's Sing tab plays a song's reference recording in your headphones, and draws your pitch over its
   melody as you sing along (see Singing along).
 - Ctrl+C stops it. A take being filed is finished first; one whose song you haven't said yet waits for
@@ -324,58 +321,6 @@ off here. On 16 takes of a song by an amateur, which sat anywhere from 274¢ und
 - The closest lines are less sure: 6 of the 12 were among the other half's closest, and 1 was even often off
   there. That amateur sang 18% of their lines within 20¢ of where the rest of the take sat; the professional
   cover, 68%.
-
-### Finding the notes
-
-`shed drill harbor` helps you find the notes of a song, and records nothing. It needs the song's reference
-melody.
-
-Word by word, it plays the note the word is sung on, then a tuner follows your voice until you've held it for
-a second: which note you're on, and which way to go. Then it plays the next word's note. ←/→ go to another
-word, ↑/↓ to the start of another line, and Space plays the note again.
-
-```
-$ shed drill harbor
-Harbor Lights  word 3 of 48
-“the lanterns swing above the harbor wall”
-“swing” is sung on D3
-
-  ──────●─────┼────────────
-  You: B2  higher ↑ (3 semitones under)
-```
-
-Then sing the song: nothing stops you. Once you've found the last word's note, or it hears you sing, the tuner
-goes (a key brings it back), and in its place a chart shows where your latest 15
-notes landed against the melody, a column for each semitone from 6 under to 6 over, so you can see at a glance
-when you've drifted a whole key away from it, and when you're back. The column most of them landed in is green on
-the melody, yellow a semitone off, red further, with an arrow saying which way to go.
-
-```
-Harbor Lights
-“so sail me home across the silver bay”
-
-              ███
-              ███
-              ███
-              ███
-              ███ ███ ███ ███
-  ─────────────────────────┼──────────────────────────
-  under                 melody                  over
-                       ▲ higher
-```
-
-- It listens to the latest 15 s every few seconds, as filing a take does (the voice separated, Whisper, the pitch
-  tracker), so it's 4-8 s behind you, and needs 8 notes held on words it matched to the melody before it says
-  which way to go: on a song with long notes, 20 s of singing or so; on a busier one, up to a minute.
-- Say another song's name to drill that one (a song with a reference melody): on its own, or with a few words
-  around it ("switch to Space Song", "let's do Space Song"), which help Whisper hear it right. Only while your
-  instrument is quiet, so singing a line with a song's name in it doesn't count, nor does a line of the song's
-  own sung without it.
-- The note is moved to the key your instrument played in your latest take (or `--transpose 3`: 3 semitones
-  above the original, `-2` under it), and to the octave your voice usually sits in, in your takes of the song.
-- Any octave of the note counts, as in the rating.
-- The microphone isn't listened to while the note plays, so the tuner doesn't take it for your voice.
-- Away from the Mac, drill from your phone: `shed serve`, then the page's Drill tab.
 
 ### Singing along
 
