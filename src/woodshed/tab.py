@@ -1,17 +1,18 @@
-"""A song's melody as written in a tab (a Guitar Pro file, as Songsterr saves them), to sing along to (along.py)
-in place of the melody heard in the reference recording: a singer slides into notes, bends them and adds some, so
-what's heard wanders; the tab says which notes the song is made of.
+"""A song's melody as written in a tab, to sing along to (along.py) in place of the melody heard in the reference
+recording: a singer slides into notes, bends them and adds some, so what's heard wanders; the tab says which notes
+the song is made of. The tab comes from Songsterr (songsterr.py), or from a Guitar Pro file, as Songsterr saves them.
 
-- The file is a zip holding the score as XML (the .gp of Guitar Pro 7 and later). The older .gp3, .gp4, .gp5 and
-  .gpx are other formats, not read here, nor is MIDI: it would say no more (notes and when), and a tab site gives
-  the .gp.
+- A Guitar Pro file is a zip holding the score as XML (the .gp of Guitar Pro 7 and later). The older .gp3, .gp4,
+  .gp5 and .gpx are other formats, not read here, nor is MIDI: it would say no more (notes and when), and a tab site
+  gives the .gp.
 - A tab doesn't say which of its tracks is the voice (Songsterr names it after the singer, and gives it any
   instrument), nor when the recording starts, nor always its key (a song played with a capo is often written as
   fingered, voice and all) or its exact tempo. All are found by laying each track over the melody heard in the
   recording (along.contour()), slid in time, up to 5% faster or slower, in each of the 12 keys: the track and
   the place where the most of its notes fall on the same note as the singer's, whatever the octave (place()).
-- Repeats are played out as written (a section between repeat signs, the times it says); a score with alternate
-  endings or jumps (D.S., coda…) isn't read: where it goes next isn't followed here.
+- Repeats are played out as written (a section between repeat signs, the times it says, and on each time the
+  alternate ending for it, from Songsterr). A Guitar Pro file with alternate endings or jumps (D.S., coda…) isn't
+  read: where it goes next isn't followed here.
 """
 
 import zipfile
@@ -28,7 +29,11 @@ _GRID = 0.02  # seconds: tracks are laid over the melody heard this finely
 MAX_SHIFT_SECONDS = 30.0  # how far from the tab's start the recording's may be, either way
 _STRETCHES = np.arange(0.95, 1.0501, 0.002)  # the recording against the tab's tempo (then every 0.0002 around the best)
 MIN_NOTES = 20  # a track with fewer isn't a melody
-MIN_SHARE = 0.35  # of a track's notes on the singer's, for it to be the voice (other tracks: under 0.2)
+MIN_SHARE = 0.2  # of a track's notes on the singer's, for it to be the voice (other tracks: 0.21 at most)
+# How far the voice's best fit stands out from its others (every key and moment), in standard deviations: 10 to 16
+# on 3 songs, where other tracks got 6.6 at most (a synth doubling the voice). A voice whose share is low, as where a
+# tab writes the upper of two stacked voices and the lower is heard, still stands out.
+MIN_PROMINENCE = 8.0
 
 
 class TabError(Exception):
@@ -51,6 +56,17 @@ class Placed:
     key: int  # semitones the tab is written under the recording (over: negative): a capo's worth, usually
 
 
+@dataclass
+class Score:
+    """A tab as read, before its notes are timed: each bar's beats, and in which order and how fast they're played."""
+
+    lengths: list[float]  # each bar's, in quarter notes
+    tempos: list[tuple[int, float, float]]  # (bar, how far into it (0 to 1), quarter notes a minute)
+    order: list[int]  # the bars, in the order they're played (played())
+    parts: list[tuple[str, list[list[tuple[float, int | None, bool]]]]]  # each track's name, and its bars' beats:
+    # (length in quarter notes, the MIDI note it sounds (of several, the highest; None: silent), tied to the one before)
+
+
 def tracks(path: Path) -> list[Track]:
     """The tracks of a Guitar Pro file, each as the notes it plays one at a time (of several at once, the highest)."""
     try:
@@ -59,86 +75,110 @@ def tracks(path: Path) -> list[Track]:
     except (zipfile.BadZipFile, KeyError, ElementTree.ParseError, OSError):
         raise TabError("it isn't a Guitar Pro file Woodshed can read (a .gp, from Guitar Pro 7 or later)") from None
     try:
-        return _tracks(root)
+        score = _score(root)
     except (AttributeError, KeyError, ValueError, IndexError, TypeError):
         raise TabError("its score isn't written the way Guitar Pro 7 writes it") from None
+    return timed(score)
 
 
-def _tracks(root) -> list[Track]:
+def _score(root) -> Score:
     by_id = {kind: {e.get("id"): e for e in root.find(kind)} for kind in ("Bars", "Voices", "Beats", "Notes", "Rhythms")}
     masters = list(root.find("MasterBars"))
     if any(m.find("AlternateEndings") is not None or m.find("Directions") is not None for m in masters):
         raise TabError("its score has alternate endings or jumps, which aren't followed")
-    order = _played(masters)
-    lengths = []  # each master bar's, in quarter notes
+    repeats = [m.find("Repeat") for m in masters]
+    order = played([(r is not None and r.get("start") == "true",
+                     int(r.get("count") or 2) if r is not None and r.get("end") == "true" else 0, frozenset())
+                    for r in repeats])
+    lengths = []
     for master in masters:
         beats, unit = master.findtext("Time").split("/")
         lengths.append(int(beats) * 4 / int(unit))
-    tempos = sorted((int(a.findtext("Bar")), float(a.findtext("Position") or 0), _bpm(a.findtext("Value")))
-                    for a in root.find("MasterTrack").iter("Automation") if a.findtext("Type") == "Tempo")
+    tempos = [(int(a.findtext("Bar")), float(a.findtext("Position") or 0), _bpm(a.findtext("Value")))
+              for a in root.find("MasterTrack").iter("Automation") if a.findtext("Type") == "Tempo"]
+    parts = []
+    for number, track in enumerate(root.find("Tracks")):
+        bars = []
+        for master in masters:
+            ids = master.findtext("Bars").split()
+            voices = [v for v in by_id["Bars"][ids[number]].findtext("Voices").split() if v != "-1"]
+            beats = []
+            for beat_id in (by_id["Voices"][voices[0]].findtext("Beats").split() if voices else []):
+                beat = by_id["Beats"][beat_id]
+                if beat.find("GraceNotes") is not None:  # takes no time of its own
+                    continue
+                sounding = [by_id["Notes"][n] for n in (beat.findtext("Notes") or "").split()]
+                pitched = [(int(p.findtext("Number")), n) for n in sounding for p in n.iter("Property")
+                           if p.get("name") == "Midi"]
+                pitch, tied = None, False
+                if pitched:
+                    pitch, note = max(pitched, key=lambda found: found[0])
+                    tie = note.find("Tie")
+                    tied = tie is not None and tie.get("destination") == "true"
+                beats.append((_length(by_id["Rhythms"][beat.find("Rhythm").get("ref")]), pitch, tied))
+            bars.append(beats)
+        parts.append((track.findtext("Name") or f"Track {number + 1}", bars))
+    return Score(lengths, tempos, order, parts)
+
+
+def timed(score: Score) -> list[Track]:
+    """Each track of a tab as the notes it plays, in seconds from its start."""
+    tempos = sorted(score.tempos)
     if not tempos:
         raise TabError("its score has no tempo")
 
-    def seconds_of(bar: int) -> list[tuple[float, float, float]]:
-        """The stretches of a bar at one tempo: (from, in quarter notes into the bar; seconds a quarter note)."""
-        tempo = [t for t in tempos if (t[0], t[1]) <= (bar, 0.0)][-1:] or tempos[:1]
-        changes = [(0.0, 60 / tempo[0][2])] + [(p * lengths[bar], 60 / bpm) for b, p, bpm in tempos if b == bar and p > 0]
-        return changes
-
     def clock(bar: int, at: float) -> float:
         """Seconds from a bar's start to `at` quarter notes into it."""
-        changes, total = seconds_of(bar), 0.0
+        tempo = [t for t in tempos if (t[0], t[1]) <= (bar, 0.0)][-1:] or tempos[:1]
+        changes = [(0.0, 60 / tempo[0][2])] + [(p * score.lengths[bar], 60 / bpm) for b, p, bpm in tempos
+                                               if b == bar and p > 0]
+        total = 0.0
         for k, (start, each) in enumerate(changes):
             end = changes[k + 1][0] if k + 1 < len(changes) else np.inf
             total += max(0.0, min(at, end) - start) * each
         return total
 
     found = []
-    for number, track in enumerate(root.find("Tracks")):
+    for name, bars in score.parts:
         notes, now, ringing = [], 0.0, None  # ringing: the index of the note a tie would carry on
-        for bar in order:
-            ids = masters[bar].findtext("Bars").split()
-            voices = [v for v in by_id["Bars"][ids[number]].findtext("Voices").split() if v != "-1"]
+        for bar in score.order:
             at = 0.0
-            for beat_id in (by_id["Voices"][voices[0]].findtext("Beats").split() if voices else []):
-                beat = by_id["Beats"][beat_id]
-                if beat.find("GraceNotes") is not None:  # takes no time of its own
-                    continue
-                length = _length(by_id["Rhythms"][beat.find("Rhythm").get("ref")])
+            for length, pitch, tied in (bars[bar] if bar < len(bars) else []):
                 start, end = now + clock(bar, at), now + clock(bar, at + length)
-                sounding = [by_id["Notes"][n] for n in (beat.findtext("Notes") or "").split()]
-                pitched = [(int(p.findtext("Number")), n) for n in sounding for p in n.iter("Property")
-                           if p.get("name") == "Midi"]
-                if pitched:
-                    pitch, note = max(pitched, key=lambda found: found[0])
-                    tie = note.find("Tie")
-                    if (tie is not None and tie.get("destination") == "true" and ringing is not None
-                            and notes[ringing][2] == pitch):
-                        notes[ringing] = (notes[ringing][0], end, pitch)
-                    else:
-                        notes.append((start, end, pitch))
-                        ringing = len(notes) - 1
-                else:
+                if pitch is None:
                     ringing = None
+                elif tied and ringing is not None and notes[ringing][2] == pitch:
+                    notes[ringing] = (notes[ringing][0], end, pitch)
+                else:
+                    notes.append((start, end, pitch))
+                    ringing = len(notes) - 1
                 at += length
-            now += clock(bar, lengths[bar])
-        found.append(Track(track.findtext("Name") or f"Track {number + 1}", notes))
+            now += clock(bar, score.lengths[bar])
+        found.append(Track(name, notes))
     return found
 
 
-def _played(masters: list) -> list[int]:
-    """The bars in the order they're played: a section between repeat signs, the times it says."""
-    order, start, bar, done = [], 0, 0, {}
-    while bar < len(masters):
-        repeat = masters[bar].find("Repeat")
-        if repeat is not None and repeat.get("start") == "true":
-            start = bar
-        order.append(bar)
-        if repeat is not None and repeat.get("end") == "true" and done.get(bar, 1) < int(repeat.get("count") or 2):
-            done[bar] = done.get(bar, 1) + 1
-            bar = start
-        else:
+def played(bars: list[tuple[bool, int, frozenset[int]]]) -> list[int]:
+    """The bars in the order they're played, each given as (whether a repeated section starts at it, the times the
+    section that ends at it is played (0: none ends there), the times through its section it's played on, as an
+    alternate ending (empty: every time)). A section that ends without a start begins after the one before."""
+    order, start, time, bar = [], 0, 1, 0
+    while bar < len(bars):
+        starts, plays, endings = bars[bar]
+        if starts and bar != start:
+            start, time = bar, 1
+        if endings and time not in endings:
             bar += 1
+            continue
+        if len(order) > 50 * len(bars):
+            raise TabError("its repeats never end")
+        order.append(bar)
+        if time < plays:
+            time, bar = time + 1, start
+            continue
+        if plays or (endings and not (bar + 1 < len(bars) and bars[bar + 1][2])):  # the section is over
+            start, time = bar + 1, 1
+        bar += 1
     return order
 
 
@@ -163,7 +203,8 @@ def _length(rhythm) -> float:
 def place(found: list[Track], contour: list[float | None], hop: float) -> Placed | None:
     """The track that is the voice, laid over the recording whose singer's melody is `contour` (every `hop`
     seconds; along.contour()): in time with it, in its key, and in the octave nearest the singer's. None if no
-    track's notes fall on the singer's (MIN_SHARE)."""
+    track's notes fall on the singer's (MIN_SHARE), or not clearly more in one place than any other
+    (MIN_PROMINENCE)."""
     heard = _classes(np.array([np.nan if p is None else p for p in contour], float), hop)
     melodies = [track for track in found if len(track.notes) >= MIN_NOTES]
     if not melodies or not heard.any():
@@ -177,7 +218,7 @@ def place(found: list[Track], contour: list[float | None], hop: float) -> Placed
         fit = _fit(track.notes, finer, heard, size, [key])
         if fit[0] > share:
             share, shift, stretch = fit[0], fit[1], finer
-    if share < MIN_SHARE:
+    if share < MIN_SHARE or _prominence(track.notes, stretch, heard, size) < MIN_PROMINENCE:
         return None
     sung = np.array([p for p in contour if p is not None])
     written = float(np.median([n[2] - 69 + key for n in track.notes]))
@@ -197,17 +238,36 @@ def _classes(pitch: np.ndarray, hop: float) -> np.ndarray:
     return classes
 
 
+def _written(notes: list[tuple[float, float, int]], stretch: float, size: int) -> np.ndarray:
+    """The Fourier transform of when each of the 12 notes is written, played `stretch` times as slowly (conjugated:
+    multiplied by the heard ones', it gives their correlation)."""
+    written = np.zeros((12, int(notes[-1][1] * stretch / _GRID) + 1), np.float32)
+    for start, end, pitch in notes:
+        written[(pitch - 69) % 12, int(start * stretch / _GRID):int(end * stretch / _GRID)] = 1
+    return np.conj(np.fft.rfft(written, size))
+
+
+def _shifts() -> np.ndarray:
+    reach = int(MAX_SHIFT_SECONDS / _GRID)
+    return np.concatenate([np.arange(0, reach + 1), np.arange(-reach, 0)])
+
+
+def _prominence(notes: list[tuple[float, float, int]], stretch: float, heard: np.ndarray, size: int) -> float:
+    """How far the notes' best fit on the singer's stands above their fits in every key and moved by every shift,
+    in standard deviations."""
+    spectrum, shifts = _written(notes, stretch, size), _shifts()
+    together = np.concatenate([np.fft.irfft((np.roll(heard, -key, axis=0) * spectrum).sum(0), size)[shifts]
+                               for key in range(12)])
+    spread = float(together.std())
+    return float((together.max() - together.mean()) / spread) if spread > 0 else 0.0
+
+
 def _fit(notes: list[tuple[float, float, int]], stretch: float, heard: np.ndarray, size: int,
          keys=range(12)) -> tuple[float, float, int]:
     """Where in the recording the notes, played `stretch` times as slowly, best fall on the singer's, and moved
     up by how many semitones (of `keys`): (the share of the time they sound that's on the singer's note, the
     seconds to move them by, the semitones). `heard` is the Fourier transform of _classes(), over `size`."""
-    written = np.zeros((12, int(notes[-1][1] * stretch / _GRID) + 1), np.float32)
-    for start, end, pitch in notes:
-        written[(pitch - 69) % 12, int(start * stretch / _GRID):int(end * stretch / _GRID)] = 1
-    spectrum = np.conj(np.fft.rfft(written, size))
-    reach = int(MAX_SHIFT_SECONDS / _GRID)
-    shifts = np.concatenate([np.arange(0, reach + 1), np.arange(-reach, 0)])
+    spectrum, shifts = _written(notes, stretch, size), _shifts()
     best = (-1.0, 0.0, 0)
     for key in keys:
         # For each shift, how long the written notes and the heard ones are the same: a correlation, note by note.
@@ -219,4 +279,5 @@ def _fit(notes: list[tuple[float, float, int]], stretch: float, heard: np.ndarra
             around = np.sort(shifts[together >= top - 0.5])
             around = around[np.abs(around - shifts[int(np.argmax(together))]) <= 0.3 / _GRID]
             best = (top, float(np.median(around) * _GRID), key)
-    return best[0] / max(float(written.sum()), 1.0), best[1], best[2]
+    sounding = sum(int(end * stretch / _GRID) - int(start * stretch / _GRID) for start, end, _ in notes)
+    return best[0] / max(float(sounding), 1.0), best[1], best[2]

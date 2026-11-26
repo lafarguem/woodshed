@@ -35,9 +35,9 @@ Pitch, against the song's scale:
    name you type (Tab completes your song names), or leave the take in `Unsorted/`.
 
 Everything runs on your Mac. Only step 4 goes online, and it sends only a few lyric
-lines, then the Genius id of the song they found, to ask whether it's a cover. The only other time Woodshed
-goes online is when you ask it to find a song's original on YouTube
-(see [Rating against the original melody](#rating-against-the-original-melody)).
+lines, then the Genius id of the song they found, to ask whether it's a cover. The only other times Woodshed
+goes online are when you ask it to find a song's original on YouTube
+(see [Rating against the original melody](#rating-against-the-original-melody)), or to get a tab from Songsterr.
 
 ## Setup
 
@@ -90,7 +90,8 @@ shed play harbor --rating   # your worst take, then your best (or --pitch, --tim
 shed play harbor -t 3       # take 3 (--take 3)
 shed reference ~/Music/harbor-lights.mp3  # rate a song's pitch against the original's melody
 shed reference harbor       # …or find the original on YouTube (needs yt-dlp, see below)
-shed reference harbor --tab ~/Downloads/harbor.gp  # sing along to the notes a tab writes (see Singing along)
+shed reference harbor --songsterr  # sing along to the notes of Songsterr's tab of it (see Singing along)
+shed reference harbor --tab ~/Downloads/harbor.gp  # …or of a Guitar Pro file
 shed drill harbor           # find the note of each word, one by one, then sing: where you sit against the melody shows
 shed serve                  # …or sing along to the original on the page's Sing tab, your pitch drawn over its melody
 shed devices                # microphones you can record from, and how they're connected
@@ -397,13 +398,21 @@ not the recording. Nothing is recorded.
   red further.
 - The melody heard in a recording wanders: its singer slides into notes and bends them, and some are misheard.
   With a tab of the song that has its melody, the picture shows the notes the tab writes instead, as blocks (what
-  the singer sings stays, as a thin faint line over them), and you're set against those: `shed reference harbor --tab ~/Downloads/harbor-lights.gp` (a Guitar Pro .gp file, as
-  Songsterr saves them; the older .gp5 and .gpx aren't read, nor is MIDI). Woodshed finds which of the tab's
+  the singer sings stays, as a thin faint line over them), and you're set against those:
+  `shed reference harbor --songsterr` opens a page on your Mac that waits for a tab from Songsterr. Open the song's
+  tab on songsterr.com and click the **To Woodshed** bookmark (the first time, drag it to your bookmarks bar from
+  that page): Woodshed downloads the tab's tracks itself, from Songsterr's CDN. Songsterr turns away anything but a
+  browser asking where a tab is, hence the bookmark, which reads it off Songsterr's own page. Or give a Guitar Pro
+  file: `shed reference harbor --tab ~/Downloads/harbor-lights.gp` (a
+  .gp, as Songsterr saves them; the older .gp5 and .gpx aren't read, nor is MIDI). Woodshed finds which of the tab's
   tracks is the voice, and where its notes fall in the recording, in which key and at what tempo, by laying each
-  track over the melody it heard: on one song, the voice's notes fell on the singer's 40% of the time, the other
-  tracks' 15% at most, and the singer's pitch through a written note was within half a semitone of it for 73% of
-  the notes. `--no-tab` goes back to the melody heard. The tab goes with the reference: set another recording,
-  and give the tab again. A tab with alternate endings or jumps (D.S., coda) isn't read.
+  track over the melody it heard. On 3 songs, the voice's notes fell on the singer's 27 to 40% of the time, and
+  they did so far more in one place than anywhere else, which no other track did, though one followed the voice
+  on a synth. (On Space Song, the tab writes the upper of the chorus's two stacked voices, and the lower is
+  heard.) On one of them, the singer's pitch through a written note was within half a semitone of it for 73% of the
+  notes. `--no-tab` goes back to the melody heard. The tab goes with the reference: set another recording,
+  and give the tab again. Repeats and alternate endings are followed; a Guitar Pro file with alternate endings or
+  jumps (D.S., coda) isn't read.
 - Two sliders set how loud the band and the singer are: turn the singer down once you know the melody, and both
   once you have the rhythm. The melody keeps scrolling, in time.
 - Your notes are drawn about a fifth of a second after you sing them: the pitch tracker needs to hear a little of

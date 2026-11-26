@@ -124,6 +124,19 @@ def test_a_tab_written_as_fingered_under_a_capo_is_moved_to_the_recordings_key(t
     assert placed.key == 3 and [p for _, _, p in placed.notes] == [p for _, _, p in sung]
 
 
+def test_a_voice_is_found_where_the_tab_writes_the_upper_of_two_stacked_voices(tmp_path, rng):
+    # Where the recording stacks two voices and the tab writes the upper one, the lower one may be what's heard:
+    # here a third under it (major or minor) in 2 bars of 3. Few of the voice's notes fall on the singer's, but they
+    # do there more than anywhere else. Over a song's length, that is: not over a few bars of a tune going round.
+    tune = rng.choices([57, 59, 60, 62, 64, 65, 67, 69], k=160)
+    tracks = tab.tracks(gp(tmp_path / "song.gp", {**song(40), "Singer": [
+        [(tune[4 * bar + beat], "Quarter") for beat in range(4)] for bar in range(40)]}))
+    sung = [(a + 1.5, b + 1.5, p - 69 - [0, 4, 3][(k // 4) % 3]) for k, (a, b, p) in enumerate(tracks[1].notes)]
+    placed = tab.place(tracks, heard(sung, 84), along.CONTOUR_HOP)
+    assert placed.track.name == "Singer" and placed.key == 0 and tab.MIN_SHARE < placed.share < 0.35
+    assert placed.notes[0][:2] == pytest.approx((1.5, 2.0), abs=0.08)
+
+
 def test_a_tab_of_another_song_isnt_laid(tmp_path, rng):
     tracks = tab.tracks(gp(tmp_path / "song.gp", song()))
     other = [(k * 0.4, k * 0.4 + 0.4, rng.choice([-12, -10, -7, -5, -3])) for k in range(70)]
