@@ -25,6 +25,7 @@ from rich.table import Table
 from rich.text import Text
 
 from woodshed import audio, config, genius, library as lib, melody, microphones, models, phone, rating, widgets, youtube
+from woodshed import tuner
 from woodshed.library import Library, Take
 
 # Recognition runs offline; `shed init` downloads the models it needs.
@@ -350,6 +351,38 @@ def play(
         console.print(f"[green]▶[/green] [bold]{escape(song)}[/bold], {label}, recorded {_when(t.path)}{detail}")
         if not player.play(t.path, console):
             break
+
+
+@app.command()
+def tune(
+    name: Annotated[list[str] | None, typer.Argument(help="The tuning; part of its name is enough: "
+                                                          + ", ".join(t.name for t in tuner.TUNINGS) + ".",
+                                                     show_default=False)] = None,
+    device: Annotated[str | None, typer.Option(envvar="WOODSHED_DEVICE", show_default=False,
+                                               help="Input device number or name (see `shed devices`).")] = None,
+):
+    """Tune your guitar: pluck a string, and see which way to turn it. Standard tuning unless you name another
+    (shed tune drop d); ←/→ go from one to the next, and m to the next microphone. Nothing is recorded."""
+    import sounddevice as sd
+
+    try:
+        tuning = tuner.find(" ".join(name)) if name else tuner.TUNINGS[0]
+    except tuner.UnknownTuning as e:
+        console.print(f"“{escape(e.name)}” {'could be' if e.matches else 'is none of'} these tunings:")
+        for known in tuner.TUNINGS:
+            if not e.matches or known.name in e.matches:
+                console.print(f"  {known.name}  [dim]{' '.join(known.strings)}[/dim]")
+        raise typer.Exit(1)
+    if not _interactive():
+        console.print("shed tune shows the tuner in a terminal: run it in one.")
+        raise typer.Exit(1)
+    device = device or config.load().device
+    try:
+        tuner.run(console, tuning, int(device) if device and device.isdigit() else device)
+    except (ValueError, sd.PortAudioError) as e:
+        console.print(f"[red]Can't listen to “{escape(device or 'your default microphone')}”: {escape(str(e))}."
+                      "[/red] Plug it in, or pick another microphone with `shed init` or --device.")
+        raise typer.Exit(1)
 
 
 def _sung_along(songs: Library) -> list[str]:
@@ -907,7 +940,8 @@ def serve(
 ):
     """Record from your phone: open the page this puts up on your Wi-Fi. Each take you record there is sent here and
     filed, and the page shows how it rated (and asks which song it is, when that isn't clear). It can also play a
-    song's reference recording to sing along to, your pitch drawn over its melody."""
+    song's reference recording to sing along to, your pitch drawn over its melody, and tune your guitar, as
+    `shed tune` does."""
     settings = _settings()
     songs = Library(library or Path(settings.library), settings.take_format)
     for stuck in songs.incoming.glob("*.wav.filing"):  # a `shed serve` stopped while filing it: waiting again
@@ -952,6 +986,8 @@ def serve(
     else:
         console.print("The takes you record there wait here to be filed: file them with [bold]shed add[/bold]. "
                       "Ctrl+C stops.")
+    console.print("[dim]Tune, on the page, tunes your guitar, as shed tune does: in standard, drop D and other "
+                  "tunings.[/dim]")
     if sing.titles:
         console.print("[dim]Sing, on the page, plays a song's reference recording in your headphones, and draws your "
                       "pitch over its melody as you sing along.[/dim]")

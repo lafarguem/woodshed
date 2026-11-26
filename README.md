@@ -93,6 +93,8 @@ shed reference harbor       # …or find the original on YouTube (needs yt-dlp, 
 shed reference harbor --songsterr  # sing along to the notes of Songsterr's tab of it (see Singing along)
 shed reference harbor --tab ~/Downloads/harbor.gp  # …or of a Guitar Pro file
 shed serve                  # …and sing along to the original on the page's Sing tab, your pitch drawn over its melody
+shed tune                   # tune your guitar: pluck a string, see which way to turn it
+shed tune drop d            # …in another tuning (see Tuning your guitar)
 shed devices                # microphones you can record from, and how they're connected
 shed init                   # change the folder, format, microphone, token or how takes are rated
 ```
@@ -127,6 +129,7 @@ order they arrive, so naming the first take of a new song lets the next ones be 
   takes do.
 - The page's Sing tab plays a song's reference recording in your headphones, and draws your pitch over its
   melody as you sing along (see Singing along).
+- The page's Tune tab tunes your guitar, as `shed tune` does (see Tuning your guitar), from the phone's microphone.
 - Ctrl+C stops it. A take being filed is finished first; one whose song you haven't said yet waits for
   `shed add`, as does any take that couldn't be filed.
 - The page records music as it sounds: without the noise suppression, echo cancellation and automatic volume
@@ -321,6 +324,54 @@ off here. On 16 takes of a song by an amateur, which sat anywhere from 274¢ und
 - The closest lines are less sure: 6 of the 12 were among the other half's closest, and 1 was even often off
   there. That amateur sang 18% of their lines within 20¢ of where the rest of the take sat; the professional
   cover, 68%.
+
+### Tuning your guitar
+
+`shed tune` is a guitar tuner. Pluck a string, one at a time: it shows which string of the tuning it takes it
+for, and how far from its note you are, on a bar from 50¢ flat to 50¢ sharp. The string is green within 5¢,
+yellow within 15¢, red further. Nothing is recorded.
+
+```
+$ shed tune drop d
+Tuner  Drop D
+
+  6 D2   5 A2   4 D3   3 G3   2 B3   1 E4
+
+  ♭ ──────────●─────────┼──────────────────── ♯
+  A2  tune up ↑ (25¢ flat)
+
+  Listening to MacBook Pro Microphone  (m: another microphone)
+←/→ another tuning · 1-6 only that string · 0 any string · q quits
+```
+
+| Tuning | Strings, lowest first |
+|---|---|
+| Standard | E2 A2 D3 G3 B3 E4 |
+| Drop D | D2 A2 D3 G3 B3 E4 |
+| Double drop D | D2 A2 D3 G3 B3 D4 |
+| DADGAD | D2 A2 D3 G3 A3 D4 |
+| Half step down | E♭2 A♭2 D♭3 G♭3 B♭3 E♭4 |
+| Whole step down | D2 G2 C3 F3 A3 D4 |
+| Drop C | C2 G2 C3 F3 A3 D4 |
+| Open D | D2 A2 D3 F♯3 A3 D4 |
+| Open E | E2 B2 E3 G♯3 B3 E4 |
+| Open G | D2 G2 D3 G3 B3 D4 |
+| Open A | E2 A2 E3 A3 C♯4 E4 |
+| Open C | C2 G2 C3 G3 C4 E4 |
+
+- Name the tuning to start in (part of its name is enough: `shed tune dadgad`, `shed tune half`), or go from one
+  to the next with ←/→. Without a name, it starts in standard tuning.
+- The string is the tuning's nearest to what it hears. A new string, or one you're taking to another tuning,
+  starts nearer its neighbour: press the string's number (6 is the lowest) to keep to it, and 0 to go back.
+- It listens to the microphone `shed init` chose (or `--device`), and says which. Press m to go to the next
+  one, e.g. from an audio interface your guitar isn't plugged into to the Mac's own: it goes round them all,
+  passing over any it can't listen to. The choice lasts until you quit.
+- A reading stays a second after the string has died away, greyed.
+- Strummed strings, talk and noise aren't read: it waits for one string ringing alone.
+- Notes are counted from A at 440 Hz.
+- Away from the Mac, tune from your phone: `shed serve`, then the page's Tune tab. Pick the tuning in its list,
+  and tap a string to keep to it. When the phone has more than one microphone (a headset's, an audio
+  interface's), a list under the tuner picks the one it listens to, and the page remembers it.
 
 ### Singing along
 

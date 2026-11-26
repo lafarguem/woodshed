@@ -453,3 +453,35 @@ def test_shed_serve_offers_to_sing_along_to_the_songs_whose_recording_is_kept(sh
     assert "Sing, on the page, plays a song's reference recording in your headphones" in " ".join(result.output.split())
     song = served[1].song("Harbor Lights")
     assert song["octaves"] == 0 and song["contour"]["pitch"][0] == -12.0 and len(song["lines"]) == 6
+
+
+def tune_request(server, query, body, key=None):
+    status, answer = request(server, "POST", f"/tune/audio?{query}", body,
+                             {"X-Woodshed-Key": server.secret if key is None else key})
+    return status, json.loads(answer or b"{}")
+
+
+def test_the_page_tunes_a_guitar(server):
+    status, answer = request(server, "GET", "/tune", headers={"X-Woodshed-Key": server.secret})
+    known = json.loads(answer)
+    assert status == 200 and known["tunings"][0] == {"name": "Standard", "strings": ["E2", "A2", "D3", "G3", "B3", "E4"]}
+    assert "Drop D" in [tuning["name"] for tuning in known["tunings"]] and known["seconds"] == 0.4
+    assert request(server, "GET", "/tune", headers={"X-Woodshed-Key": "guess"})[0] == 403
+
+    rate = 48_000
+    t = np.arange(int(known["seconds"] * rate)) / rate  # an A string 12¢ flat, as the page sends it
+    plucked = (8000 * sum(np.sin(2 * np.pi * k * 110 * 2 ** (-0.12 / 12) * t) / k for k in (1, 2, 3))).astype("<i2").tobytes()
+    status, answer = tune_request(server, f"rate={rate}&tuning=Standard", plucked)
+    assert status == 200 and answer["reading"]["string"] == 1 and answer["reading"]["cents"] == pytest.approx(-12, abs=1)
+    assert answer["reading"]["advice"] == "tune up ↑ (12¢ flat)"
+    status, answer = tune_request(server, f"rate={rate}&tuning=Drop%20D&string=0", plucked)  # only the 6th string
+    assert status == 200 and answer["reading"]["string"] == 0 and answer["reading"]["heard"] == "A2"
+    assert answer["reading"]["advice"] == "tune down ↓ (7 semitones sharp)"
+    assert tune_request(server, f"rate={rate}&tuning=Standard", bytes(len(plucked))) == (200, {"reading": None})
+
+    assert tune_request(server, f"rate={rate}&tuning=Standard", plucked, key="guess")[0] == 403
+    assert tune_request(server, f"rate={rate}&tuning=Banjo", plucked)[0] == 404
+    assert tune_request(server, "tuning=Standard", plucked)[0] == 400  # at what rate?
+    assert tune_request(server, f"rate={rate}&tuning=Standard&string=6", plucked)[0] == 400
+    assert tune_request(server, f"rate={rate}&tuning=Standard&string=low", plucked)[0] == 400
+    assert tune_request(server, f"rate={rate}&tuning=Standard", plucked[:-1])[0] == 400  # not 16-bit samples

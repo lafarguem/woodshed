@@ -77,13 +77,38 @@
   #s-sync { display: flex; gap: 10px; align-items: center; justify-content: center; margin-top: 12px; font-size: 14px; }
   #s-sync button { font: inherit; width: 34px; height: 30px; border-radius: 8px; border: 1px solid var(--dim);
                    background: var(--card); color: var(--fg); }
+  #tuner { width: min(420px, 94vw); text-align: center; }
+  #tune-view .dim { color: var(--dim); }
+  #t-tuning, #t-mic { font: inherit; padding: 9px 12px; border-radius: 10px; border: 1px solid var(--dim);
+                      background: var(--card); color: var(--fg); max-width: 100%; }
+  #t-mics { margin-top: 26px; font-size: 15px; }
+  #t-mic { font-size: 15px; padding: 7px 10px; max-width: 70%; }
+  #t-strings { display: flex; gap: 6px; justify-content: center; margin: 18px 0 6px; }
+  #t-strings button { font: inherit; flex: 1; max-width: 64px; padding: 10px 0; border-radius: 10px;
+                      border: 1px solid var(--dim); background: var(--card); color: var(--fg); touch-action: manipulation; }
+  #t-strings button.only { border-color: var(--fg); box-shadow: inset 0 0 0 1px var(--fg); font-weight: 700; }
+  #t-strings button.on-it { color: var(--ok); border-color: var(--ok); }
+  #t-strings button.near { color: #b7950b; border-color: #b7950b; }
+  #t-strings button.far { color: var(--accent); border-color: var(--accent); }
+  #t-note { font-weight: 700; font-size: 64px; line-height: 1.15; min-height: 1.15em; margin-top: 10px; }
+  #t-meter { position: relative; height: 34px; margin-top: 6px; }
+  #t-meter::before { content: ""; position: absolute; left: 0; right: 0; top: 16px; height: 2px; background: var(--dim);
+                     opacity: .4; }
+  #t-meter::after { content: ""; position: absolute; left: 50%; top: 3px; width: 2px; height: 28px; margin-left: -1px;
+                    background: var(--dim); }
+  #t-needle { position: absolute; top: 7px; width: 20px; height: 20px; margin-left: -10px; border-radius: 50%; z-index: 1;
+              transition: left .1s linear; }
+  #t-ends { display: flex; justify-content: space-between; color: var(--dim); font-size: 14px; }
+  #t-state { min-height: 1.5em; margin-top: 6px; font-size: 19px; }
+  #tuner .on-it { color: var(--ok); }  #tuner .near { color: #b7950b; }  #tuner .far { color: var(--accent); }
+  .faded { opacity: .45; }
   [hidden] { display: none !important; }
 </style>
 </head>
 <body>
   <h1>Woodshed</h1>
   <div class="tabs"><button type="button" id="tab-record" class="on">Record</button><button type="button"
-    id="tab-sing">Sing</button></div>
+    id="tab-sing">Sing</button><button type="button" id="tab-tune">Tune</button></div>
   <div class="view" id="record-view">
   <p class="hint">Each take you record here is sent to your Mac and filed under its song.</p>
   <button id="record" type="button">Record</button>
@@ -125,6 +150,20 @@
       <div class="sing-actions"><button type="button" id="s-stop">Another song</button></div>
       <p class="dim" id="s-wait"></p>
     </div>
+  </div>
+  <div class="view" id="tune-view" hidden>
+    <p class="hint">Tune your guitar: pluck a string, one at a time, near the phone. Tap a string to keep to that
+      one. Nothing is recorded.</p>
+    <div id="tuner" hidden>
+      <select id="t-tuning" aria-label="Tuning"></select>
+      <div id="t-strings"></div>
+      <div id="t-note"></div>
+      <div id="t-meter"><div id="t-needle" hidden></div></div>
+      <div id="t-ends"><span>♭ flat</span><span>sharp ♯</span></div>
+      <div id="t-state"></div>
+      <div id="t-mics" class="dim" hidden><label for="t-mic">Microphone</label> <select id="t-mic"></select></div>
+    </div>
+    <p class="dim" id="t-wait"></p>
   </div>
 <script>
 "use strict";
@@ -341,11 +380,12 @@ function result(filed) {
 
 function tab(name) {
   if (recorder) return;  // a take is being recorded
-  for (const view of ["record", "sing"]) {
+  for (const view of ["record", "sing", "tune"]) {
     $(`tab-${view}`).classList.toggle("on", view === name);
     $(`${view}-view`).hidden = view !== name;
   }
   if (name !== "sing") stopSinging();
+  if (name === "tune") startTuning(); else stopTuning();
   if (name === "sing") songsToSing();
 }
 
@@ -845,7 +885,209 @@ for (const [id, by] of [["s-earlier", 20], ["s-later", -20]]) {
   });
 }
 
+// Tuning a guitar: the latest the microphone heard goes to the Mac, over and over, and each answer says which string
+// of the tuning it's taken for, and how far from it: shown on a line from 50 cents flat to 50 sharp. The Mac keeps
+// nothing between two of them.
+const tuning = { context: null, stream: null, node: null, heard: null, filled: 0, tunings: [], limits: null, chosen: 0,
+                 only: null, reading: null, readAt: 0, wakeLock: null };
+const TUNED_KEPT = 1000;  // a reading stays this long (ms) once the string has died away, faded
+const tunedColors = { "on-it": "var(--ok)", near: "#b7950b", far: "var(--accent)" };
+const kept = (name) => { try { return localStorage.getItem(name); } catch (_) { return null; } };
+
+async function startTuning() {
+  stopTuning();
+  const say = (text) => { $("t-wait").textContent = text; };
+  say("");
+  let context, stream;
+  const audio = { echoCancellation: false, noiseSuppression: false, autoGainControl: false }, wanted = kept("woodshed-mic");
+  try {
+    context = tuning.context = new AudioContext();  // made in the tap itself, or a phone keeps it silent
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: wanted ? { ...audio, deviceId: { exact: wanted } } : audio });
+    } catch (error) {  // the microphone picked last time is gone (a headset put away): the phone's usual one
+      if (!wanted || !["OverconstrainedError", "NotFoundError"].includes(error.name)) throw error;
+      stream = await navigator.mediaDevices.getUserMedia({ audio });
+    }
+  } catch (error) {
+    if (tuning.context === context) stopTuning();
+    say(error.name === "NotAllowedError"
+      ? "The microphone isn't allowed: allow it for this page (the icon next to the address), then tap Tune again."
+      : `Can't use the microphone: ${error.message}`);
+    return;
+  }
+  if (tuning.context !== context) {  // left meanwhile
+    stream.getTracks().forEach((track) => track.stop());
+    return;
+  }
+  tuning.stream = stream;
+  let answer;
+  try {
+    await context.resume();
+    const response = await fetch("tune", { headers: { "X-Woodshed-Key": key }, cache: "no-store" });
+    if (!response.ok) throw new Error(`the Mac answered ${response.status}`);
+    answer = await response.json();
+  } catch (error) {
+    if (tuning.context === context) stopTuning();
+    say(error instanceof TypeError ? "Your Mac didn't answer: is shed serve still running?"
+                                   : `Couldn't get the tunings: ${error.message}.`);
+    return;
+  }
+  if (tuning.context !== context) return;
+  const named = kept("woodshed-tuning");
+  Object.assign(tuning, { tunings: answer.tunings, limits: answer, filled: 0,
+                          chosen: Math.max(0, answer.tunings.findIndex((known) => known.name === named)),
+                          heard: new Float32Array(Math.ceil(answer.seconds * context.sampleRate)) });
+  const take = (samples) => {  // the latest the microphone heard, the oldest of it let go
+    const kept = tuning.heard;
+    if (!kept) return;
+    if (samples.length >= kept.length) kept.set(samples.subarray(samples.length - kept.length));
+    else {
+      kept.copyWithin(0, samples.length);
+      kept.set(samples, kept.length - samples.length);
+    }
+    tuning.filled = Math.min(kept.length, tuning.filled + samples.length);
+  };
+  if (context.audioWorklet) {
+    const code = `registerProcessor("tap", class extends AudioWorkletProcessor {
+      process(inputs) { if (inputs[0][0]) this.port.postMessage(inputs[0][0].slice(0)); return true; } });`;
+    await context.audioWorklet.addModule(URL.createObjectURL(new Blob([code], { type: "text/javascript" })));
+    if (tuning.context !== context) return;
+    tuning.node = new AudioWorkletNode(context, "tap");
+    tuning.node.port.onmessage = (event) => take(event.data);
+  } else {
+    tuning.node = context.createScriptProcessor(4096, 1, 1);
+    tuning.node.onaudioprocess = (event) => take(event.inputBuffer.getChannelData(0).slice(0));
+  }
+  const silent = context.createGain();
+  silent.gain.value = 0;
+  context.createMediaStreamSource(stream).connect(tuning.node);
+  tuning.node.connect(silent).connect(context.destination);  // it only runs when connected
+  try {  // not waited for: a browser can leave it unanswered
+    navigator.wakeLock.request("screen").then((lock) => {
+      if (tuning.context === context) tuning.wakeLock = lock; else lock.release().catch(() => {});
+    }, () => {});
+  } catch (_) { /* the screen may sleep */ }
+  const select = $("t-tuning");
+  select.replaceChildren(...answer.tunings.map((known) => element("option", known.name)));
+  select.selectedIndex = tuning.chosen;
+  showStrings();
+  $("tuner").hidden = false;
+  showMicrophones(context, stream);
+  sendPlucked(context);
+}
+
+// The microphones the phone has (its own, a headset's, an audio interface's), to pick the one listened to: shown when
+// there's more than one. Their names are only told once the microphone is allowed.
+async function showMicrophones(context, stream) {
+  const select = $("t-mic");
+  let inputs = [];
+  try {
+    inputs = (await navigator.mediaDevices.enumerateDevices()).filter((device) => device.kind === "audioinput" && device.deviceId);
+  } catch (_) { /* none to pick from */ }
+  if (tuning.context !== context) return;
+  // The one listened to, as the browser tells it, or else the one asked for.
+  const track = stream.getAudioTracks()[0];
+  const used = [track.getSettings ? track.getSettings().deviceId : null, kept("woodshed-mic")].find(
+    (id) => inputs.some((input) => input.deviceId === id));
+  select.replaceChildren(...inputs.map((input, i) => {
+    const choice = element("option", input.label || `Microphone ${i + 1}`);
+    choice.value = input.deviceId;
+    return choice;
+  }));
+  if (used) select.value = used;
+  $("t-mics").hidden = inputs.length < 2;
+}
+
+function stopTuning() {
+  if (tuning.stream) tuning.stream.getTracks().forEach((track) => track.stop());
+  if (tuning.context) tuning.context.close().catch(() => {});
+  if (tuning.wakeLock) tuning.wakeLock.release().catch(() => {});
+  Object.assign(tuning, { context: null, stream: null, node: null, heard: null, filled: 0, only: null, reading: null,
+                          readAt: 0, wakeLock: null });
+  $("tuner").hidden = true;
+}
+
+// The tuning's strings, from the lowest: tapping one keeps to it, tapping it again goes back to whichever is nearest.
+function showStrings() {
+  const strings = tuning.tunings[tuning.chosen].strings.map((string, i) => {
+    const choice = element("button", string);
+    choice.type = "button";
+    choice.addEventListener("click", () => {
+      Object.assign(tuning, { only: tuning.only === i ? null : i, reading: null });
+      showTuned(null);
+    });
+    return choice;
+  });
+  $("t-strings").replaceChildren(...strings);
+  showTuned(null);
+}
+
+// Sends the latest heard, as soon as the Mac has answered for what was sent before.
+async function sendPlucked(context) {
+  while (tuning.context === context) {
+    if (tuning.filled < tuning.heard.length) { await sleep(30); continue; }
+    const pcm = Int16Array.from(tuning.heard, (x) => Math.max(-32768, Math.min(32767, Math.round(x * 32768))));
+    const chosen = tuning.chosen, only = tuning.only;
+    const query = `rate=${Math.round(context.sampleRate)}&tuning=${encodeURIComponent(tuning.tunings[chosen].name)}` +
+      (only === null ? "" : `&string=${only}`);
+    let answer = null;
+    try {
+      const response = await fetch(`tune/audio?${query}`, { method: "POST", body: pcm.buffer,
+        headers: { "X-Woodshed-Key": key, "Content-Type": "application/octet-stream" } });
+      if (response.ok) answer = await response.json();
+    } catch (_) { /* the Mac is out of reach */ }
+    if (tuning.context !== context) return;
+    if (!answer) {
+      $("t-wait").textContent = "Your Mac didn't answer: is shed serve still running, and the phone on the same Wi-Fi?";
+      await sleep(1000);
+      continue;
+    }
+    $("t-wait").textContent = "";
+    if (tuning.chosen === chosen && tuning.only === only) showTuned(answer.reading);  // else: asked of another string
+    await sleep(40);
+  }
+}
+
+// The string you're on, and how far from its note: green within a few cents, yellow a little further, red beyond.
+function showTuned(reading) {
+  const now = performance.now();
+  if (reading) Object.assign(tuning, { reading, readAt: now });
+  else if (now - tuning.readAt > TUNED_KEPT) tuning.reading = null;
+  const shown = tuning.reading, strings = tuning.tunings[tuning.chosen].strings;
+  const style = !shown ? "" : Math.abs(shown.cents) <= tuning.limits.inTune ? "on-it"
+    : Math.abs(shown.cents) <= tuning.limits.near ? "near" : "far";
+  [...$("t-strings").children].forEach((choice, i) => {
+    choice.className = [tuning.only === i ? "only" : "", shown && shown.string === i ? style : ""].join(" ").trim();
+  });
+  const note = $("t-note"), needle = $("t-needle"), said = $("t-state");
+  needle.hidden = !shown;
+  for (const part of [note, needle, said]) part.classList.toggle("faded", Boolean(shown) && !reading);
+  if (!shown) {
+    note.textContent = tuning.only === null ? "" : strings[tuning.only];
+    note.className = "dim";
+    said.className = "dim";
+    said.textContent = tuning.only === null ? "Pluck a string…" : `Pluck the ${strings[tuning.only]} string…`;
+    return;
+  }
+  note.textContent = strings[shown.string];
+  note.className = said.className = `${style}${reading ? "" : " faded"}`;
+  needle.style.left = `${50 + Math.max(-50, Math.min(50, shown.cents))}%`;
+  needle.style.background = tunedColors[style];
+  said.textContent = Math.abs(shown.cents) < 50 ? shown.advice : `${shown.advice}: you're on ${shown.heard}`;
+}
+
+$("t-tuning").addEventListener("change", (event) => {
+  Object.assign(tuning, { chosen: event.target.selectedIndex, only: null, reading: null });
+  try { localStorage.setItem("woodshed-tuning", tuning.tunings[tuning.chosen].name); } catch (_) { /* not kept */ }
+  showStrings();
+});
+$("t-mic").addEventListener("change", (event) => {  // listened to from now on, and the next time
+  try { localStorage.setItem("woodshed-mic", event.target.value); } catch (_) { /* not kept */ }
+  startTuning();
+});
+
 $("tab-record").addEventListener("click", () => tab("record"));
+$("tab-tune").addEventListener("click", () => tab("tune"));
 $("tab-sing").addEventListener("click", () => tab("sing"));
 button.addEventListener("click", () => (recorder ? stop() : start()));
 $("retry").addEventListener("click", () => unsent && send(unsent));

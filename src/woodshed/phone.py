@@ -9,6 +9,10 @@ when that isn't clear, then showing how it rated.
 The page can also play a song's reference recording to sing along to (along.Session): it gets the recording and its
 melody, sends what its microphone hears as fast as answers come back (some 15 times a second), and draws the
 pitches read. Connections are kept open between requests, or each would start with a new handshake.
+
+And it can tune a guitar, as `shed tune` does (tuner.py): it gets the tunings, and sends the latest 0.4 s its
+microphone heard, over and over, each answered with the string it's taken for and how far from it. Nothing is kept
+here between two of them: the page can come and go.
 """
 
 import hmac
@@ -31,7 +35,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import numpy as np
 
-from woodshed import audio
+from woodshed import audio, tuner
 from woodshed.library import Library
 
 if TYPE_CHECKING:
@@ -271,6 +275,11 @@ class _Handler(BaseHTTPRequestHandler):
             if not self._allowed(self.headers.get(_KEY_HEADER)):
                 return self._json(403, error="this isn't the link `shed serve` shows")
             return self._sing_get(url.path, parse_qs(url.query))
+        if url.path == "/tune":
+            if not self._allowed(self.headers.get(_KEY_HEADER)):
+                return self._json(403, error="this isn't the link `shed serve` shows")
+            return self._json(200, tunings=[{"name": t.name, "strings": list(t.strings)} for t in tuner.TUNINGS],
+                              seconds=tuner.LISTEN_SECONDS, inTune=tuner.IN_TUNE_CENTS, near=tuner.NEAR_CENTS)
         if url.path != "/":
             return self._reply(404, "text/plain", b"Not found")
         if not self._allowed(parse_qs(url.query).get("key", [None])[0]):
@@ -279,13 +288,16 @@ class _Handler(BaseHTTPRequestHandler):
         self._reply(200, "text/html; charset=utf-8", resources.files("woodshed").joinpath("phone.html").read_bytes())
 
     def do_POST(self) -> None:
-        path = urlsplit(self.path).path
+        url = urlsplit(self.path)
+        path = url.path
         if not self._allowed(self.headers.get(_KEY_HEADER)):
             return self._json(403, error="this isn't the link `shed serve` shows")
         if (answered := re.fullmatch(r"/takes/([^/]+)/answer", path)):
             return self._answer(answered[1])
         if path.startswith("/sing"):
             return self._sing(path)
+        if path == "/tune/audio":
+            return self._tune(parse_qs(url.query))
         if path != "/takes":
             return self._json(404, error="not found")
         try:
@@ -365,3 +377,24 @@ class _Handler(BaseHTTPRequestHandler):
         if read is None:
             return self._json(409, error="nothing is being sung along to: pick a song")
         self._json(200, read=read)
+
+    def _tune(self, asked: dict) -> None:
+        """Tuning a guitar from the phone: the latest its microphone heard, sampled at `rate`, against the strings
+        of `tuning`, or only the one numbered `string` (from 0, the lowest). Answers with what the page shows
+        (tuner.state()): null when no string is heard."""
+        def number(name: str) -> int | None:
+            value = asked.get(name, [""])[0]
+            return int(value) if value.isascii() and value.isdigit() and len(value) < 7 else None
+
+        tuning = next((t for t in tuner.TUNINGS if t.name == asked.get("tuning", [""])[0]), None)
+        if tuning is None:
+            return self._json(404, error="that isn't a tuning Woodshed knows")
+        rate, string = number("rate"), number("string")
+        if rate is None or not 8000 <= rate <= 192_000:
+            return self._json(400, error="the page didn't say how fast its microphone samples")
+        if "string" in asked and (string is None or string >= len(tuning.strings)):
+            return self._json(400, error="that tuning has no such string")
+        if (body := self._body(MAX_AUDIO_BYTES)) is None or len(body) % 2:
+            return self._json(400, error="that isn't the page's audio")
+        sounding = tuner.heard(np.frombuffer(body, "<i2").astype(np.float32) / 32768, rate)
+        self._json(200, reading=tuner.state(tuning, sounding, string))
