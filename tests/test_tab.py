@@ -125,16 +125,54 @@ def test_a_tab_written_as_fingered_under_a_capo_is_moved_to_the_recordings_key(t
 
 
 def test_a_voice_is_found_where_the_tab_writes_the_upper_of_two_stacked_voices(tmp_path, rng):
-    # Where the recording stacks two voices and the tab writes the upper one, the lower one may be what's heard:
-    # here a third under it (major or minor) in 2 bars of 3. Few of the voice's notes fall on the singer's, but they
-    # do there more than anywhere else. Over a song's length, that is: not over a few bars of a tune going round.
-    tune = rng.choices([57, 59, 60, 62, 64, 65, 67, 69], k=160)
-    tracks = tab.tracks(gp(tmp_path / "song.gp", {**song(40), "Singer": [
-        [(tune[4 * bar + beat], "Quarter") for beat in range(4)] for bar in range(40)]}))
-    sung = [(a + 1.5, b + 1.5, p - 69 - [0, 4, 3][(k // 4) % 3]) for k, (a, b, p) in enumerate(tracks[1].notes)]
-    placed = tab.place(tracks, heard(sung, 84), along.CONTOUR_HOP)
+    # Where the recording stacks two voices and the tab writes the upper one, the lower one may be what's heard. Few
+    # of the voice's notes fall on the singer's, but they do there more than anywhere else. Over a song's length,
+    # that is: not over a few bars of a tune going round.
+    voice, sung = stacked(rng)
+    tracks = tab.tracks(gp(tmp_path / "song.gp", {**song(40), "Singer": voice}))
+    placed = tab.place(tracks, sung(tracks[1].notes), along.CONTOUR_HOP)
     assert placed.track.name == "Singer" and placed.key == 0 and tab.MIN_SHARE < placed.share < 0.35
     assert placed.notes[0][:2] == pytest.approx((1.5, 2.0), abs=0.08)
+
+
+def stacked(rng, bars=40):
+    """A tune over a song's length, and the notes a singer is heard on, a third under it in 2 bars of 3 (as where a
+    recording stacks two voices and the lower is heard), from 1.5 s into the recording."""
+    tune = rng.choices([57, 59, 60, 62, 64, 65, 67, 69], k=4 * bars)
+    voice = [[(tune[4 * bar + beat], "Quarter") for beat in range(4)] for bar in range(bars)]
+    return voice, lambda notes: heard([(a + 1.5, b + 1.5, p - 69 - [0, 4, 3][(k // 4) % 3])
+                                       for k, (a, b, p) in enumerate(notes)], 2 * bars + 4)
+
+
+def test_the_voice_is_chosen_over_a_backing_voice_that_sings_a_few_of_its_notes(tmp_path, rng):
+    # The backing voice sings the voice's notes in a few bars, where the singer is heard on them: more of its notes
+    # fall on the singer's than of the voice's, but for less long.
+    voice, sung = stacked(rng)
+    backing = [voice[bar] if bar % 3 == 0 and bar < 24 else [(None, "Whole")] for bar in range(40)]
+    tracks = tab.tracks(gp(tmp_path / "song.gp", {**song(40), "Singer": voice, "Backing": backing}))
+    placed = tab.place(tracks, sung(tracks[1].notes), along.CONTOUR_HOP)
+    assert placed.track.name == "Singer" and placed.key == 0 and placed.close is None
+
+
+def test_of_two_voices_that_fit_as_well_the_names_say_which_leads_or_you_do(tmp_path, rng):
+    voice, sung = stacked(rng)
+    doubled = voice[:-1] + [[(None, "Whole")]]  # the backing voice sings along, but for the last bar
+    band = {name: bars for name, bars in song(40).items() if name != "Singer"}
+    names = {"Bea | Backing Vocals": doubled, "Ann | Lead Vocals": voice}
+    tracks = tab.tracks(gp(tmp_path / "song.gp", {**band, **names}))
+    contour = sung(next(t for t in tracks if t.name == "Ann | Lead Vocals").notes)
+    placed = tab.place(tracks, contour, along.CONTOUR_HOP)
+    assert placed.track.name == "Ann | Lead Vocals" and placed.close == "Bea | Backing Vocals"
+
+    tracks = tab.tracks(gp(tmp_path / "song.gp", {**band, "Bea": voice, "Ann": doubled}))  # names say nothing
+    assert tab.place(tracks, contour, along.CONTOUR_HOP).track.name == "Bea"  # the longest
+
+    tracks = tab.tracks(gp(tmp_path / "song.gp", {**band, **names}))
+    placed = tab.place(tracks, contour, along.CONTOUR_HOP, named="bea")
+    assert placed.track.name == "Bea | Backing Vocals" and placed.close is None
+    assert tab.place(tracks, contour, along.CONTOUR_HOP, named="bass") is None  # it doesn't follow the singer
+    with pytest.raises(tab.TabError, match="none of its tracks is named “piano”; they are “Bass”"):
+        tab.place(tracks, contour, along.CONTOUR_HOP, named="piano")
 
 
 def test_a_tab_of_another_song_isnt_laid(tmp_path, rng):
@@ -182,3 +220,29 @@ def test_a_tab_needs_a_reference_kept_and_a_file_that_fits(harbor, tmp_path):
     (tmp_path / "notes.gp").write_text("not a tab")
     result = harbor("reference", "harbor", "--tab", str(tmp_path / "notes.gp"))
     assert result.exit_code == 1 and "Can't read notes.gp" in text(result)
+
+
+def test_shed_reference_takes_the_track_you_name(harbor, tmp_path, rng):
+    from woodshed import cli  # noqa: F401
+
+    set_reference(harbor)
+    voice, sung = stacked(rng)
+    doubled = voice[:-1] + [[(None, "Whole")]]
+    band = {name: bars for name, bars in song(40).items() if name != "Singer"}
+    file = gp(tmp_path / "harbor.gp", {**band, "Bea | Backing Vocals": doubled, "Ann | Lead Vocals": voice})
+    folder = harbor.library.root / "Harbor Lights"
+    kept = json.loads((folder / ".reference.json").read_text())
+    kept["contour"] = sung(tab.tracks(file)[3].notes)
+    (folder / ".reference.json").write_text(json.dumps(kept))
+
+    shown = text(harbor("reference", "harbor", "--tab", str(file)))
+    assert "the 160 notes of “Ann | Lead Vocals” in harbor.gp." in shown
+    assert "“Bea | Backing Vocals” fit nearly as well: --track picks a track by its name instead." in shown
+    shown = text(harbor("reference", "harbor", "--tab", str(file), "--track", "backing"))
+    assert "notes of “Bea | Backing Vocals” in harbor.gp." in shown and "nearly as well" not in shown
+    assert harbor.library.reference("Harbor Lights").tab["track"] == "Bea | Backing Vocals"
+
+    result = harbor("reference", "harbor", "--tab", str(file), "--track", "piano")
+    assert result.exit_code == 1 and "none of its tracks is named “piano”" in text(result)
+    result = harbor("reference", "harbor", "--track", "lead")
+    assert result.exit_code == 1 and "give it with --tab or --songsterr" in text(result)

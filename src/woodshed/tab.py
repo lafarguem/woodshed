@@ -15,6 +15,7 @@ the song is made of. The tab comes from Songsterr (songsterr.py), or from a Guit
   read: where it goes next isn't followed here.
 """
 
+import re
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,6 +35,13 @@ MIN_SHARE = 0.2  # of a track's notes on the singer's, for it to be the voice (o
 # on 3 songs, where other tracks got 6.6 at most (a synth doubling the voice). A voice whose share is low, as where a
 # tab writes the upper of two stacked voices and the lower is heard, still stands out.
 MIN_PROMINENCE = 8.0
+# Two tracks that fall on the singer's for nearly as long as each other (this share of the longer, or more) can't
+# be told apart by the recording: a backing voice doubling the voice fell on it 31.4 s, the voice 32.4 s. Their
+# names do it then: Songsterr names them "Lead Vocals" and "Backing Vocals".
+CLOSE = 0.85
+_LEAD = re.compile(r"\b(lead|main)\W*vocal|\bvocals?\W*\(?(lead|main)\b", re.I)
+_BACKING = re.compile(r"\b(backing|back|harmony|choir|additional|doubled?)\W*vocal|"
+                      r"\bvocals?\W*\(?(backing|harmony|doubled?)\b|\bbvs?\b", re.I)
 
 
 class TabError(Exception):
@@ -54,6 +62,7 @@ class Placed:
     notes: list[tuple[float, float, float]]  # (start, end, in the recording; semitones from A440)
     share: float  # of the time its notes sound, how much is on the note the recording's singer sings then
     key: int  # semitones the tab is written under the recording (over: negative): a capo's worth, usually
+    close: str | None = None  # the name of another track that fit nearly as well (CLOSE), if one did
 
 
 @dataclass
@@ -200,11 +209,18 @@ def _length(rhythm) -> float:
     return length
 
 
-def place(found: list[Track], contour: list[float | None], hop: float) -> Placed | None:
+def place(found: list[Track], contour: list[float | None], hop: float, named: str | None = None) -> Placed | None:
     """The track that is the voice, laid over the recording whose singer's melody is `contour` (every `hop`
-    seconds; along.contour()): in time with it, in its key, and in the octave nearest the singer's. None if no
-    track's notes fall on the singer's (MIN_SHARE), or not clearly more in one place than any other
-    (MIN_PROMINENCE)."""
+    seconds; along.contour()): in time with it, in its key, and in the octave nearest the singer's. Of the tracks
+    whose notes fall on the singer's (MIN_SHARE), clearly more in one place than any other (MIN_PROMINENCE), the
+    one that does so for longest: a backing voice of a few notes may fall on them as often, by chance, but not as
+    long; one doubling the voice, nearly as long, when their names say which is the lead (CLOSE). `named`: only the
+    tracks with that in their name (raises TabError if none has). None if no track fits."""
+    if named:
+        every, found = found, [track for track in found if named.casefold() in track.name.casefold()]
+        if not found:
+            raise TabError(f"none of its tracks is named “{named}”; they are "
+                           + ", ".join(f"“{track.name}”" for track in every))
     heard = _classes(np.array([np.nan if p is None else p for p in contour], float), hop)
     melodies = [track for track in found if len(track.notes) >= MIN_NOTES]
     if not melodies or not heard.any():
@@ -212,20 +228,35 @@ def place(found: list[Track], contour: list[float | None], hop: float) -> Placed
     longest = max(track.notes[-1][1] for track in melodies) * _STRETCHES[-1]
     size = 1 << int(np.ceil(np.log2(longest / _GRID + 1 + heard.shape[1])))
     heard = np.fft.rfft(heard, size)
-    share, shift, key, stretch, track = max(((*_fit(track.notes, stretch, heard, size), stretch, track)
-                                             for track in melodies for stretch in _STRETCHES), key=lambda fit: fit[0])
-    for finer in np.arange(stretch - _STRETCHES[1] + _STRETCHES[0], stretch + _STRETCHES[1] - _STRETCHES[0], 0.0002):
-        fit = _fit(track.notes, finer, heard, size, [key])
-        if fit[0] > share:
-            share, shift, stretch = fit[0], fit[1], finer
-    if share < MIN_SHARE or _prominence(track.notes, stretch, heard, size) < MIN_PROMINENCE:
+    fits = []
+    for track in melodies:
+        share, shift, key, stretch = max(((*_fit(track.notes, stretch, heard, size), stretch)
+                                          for stretch in _STRETCHES), key=lambda fit: fit[0])
+        for finer in np.arange(stretch - _STRETCHES[1] + _STRETCHES[0], stretch + _STRETCHES[1] - _STRETCHES[0],
+                               0.0002):
+            fit = _fit(track.notes, finer, heard, size, [key])
+            if fit[0] > share:
+                share, shift, stretch = fit[0], fit[1], finer
+        if share >= MIN_SHARE and _prominence(track.notes, stretch, heard, size) >= MIN_PROMINENCE:
+            sounding = sum(b - a for a, b, _ in track.notes) * stretch
+            fits.append((share * sounding, share, shift, key, stretch, track))
+    if not fits:
         return None
+    fits.sort(key=lambda fit: -fit[0])
+    close = [fit for fit in fits if fit[0] >= CLOSE * fits[0][0]]
+    _, share, shift, key, stretch, track = min(close, key=lambda fit: _role(fit[5].name))  # the longest, of a role
+    others = [fit[5].name for fit in close if fit[5] is not track]
     sung = np.array([p for p in contour if p is not None])
     written = float(np.median([n[2] - 69 + key for n in track.notes]))
     octave = 12 * round((float(np.median(sung)) - written) / 12)
     return Placed(track, [(round(float(a * stretch + shift), 2), round(float(b * stretch + shift), 2),
                            float(p - 69 + key + octave)) for a, b, p in track.notes], float(share),
-                  int((key + 6) % 12 - 6))
+                  int((key + 6) % 12 - 6), others[0] if others else None)
+
+
+def _role(name: str) -> int:
+    """How likely a track's name says it's the voice: 0 a lead vocal, 1 nothing either way, 2 a backing vocal."""
+    return 0 if _LEAD.search(name) else 2 if _BACKING.search(name) else 1
 
 
 def _classes(pitch: np.ndarray, hop: float) -> np.ndarray:

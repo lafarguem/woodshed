@@ -406,11 +406,15 @@ not the recording. Nothing is recorded.
   file: `shed reference harbor --tab ~/Downloads/harbor-lights.gp` (a
   .gp, as Songsterr saves them; the older .gp5 and .gpx aren't read, nor is MIDI). Woodshed finds which of the tab's
   tracks is the voice, and where its notes fall in the recording, in which key and at what tempo, by laying each
-  track over the melody it heard. On 3 songs, the voice's notes fell on the singer's 27 to 40% of the time, and
-  they did so far more in one place than anywhere else, which no other track did, though one followed the voice
+  track over the melody it heard. On 4 songs, the voice's notes fell on the singer's 25 to 40% of the time, and
+  they did so far more in one place than anywhere else, which no instrument did, though one followed the voice
   on a synth. (On Space Song, the tab writes the upper of the chorus's two stacked voices, and the lower is
-  heard.) On one of them, the singer's pitch through a written note was within half a semitone of it for 73% of the
-  notes. `--no-tab` goes back to the melody heard. The tab goes with the reference: set another recording,
+  heard.) Of the tracks that fit, the one on the singer's notes for longest is the voice: a backing voice of a few
+  notes may fit as often, but not as long. A backing voice that doubles the voice fits nearly as long (on This
+  Fire, 31.4 s against 32.4 s): then the tracks' names say which leads ("Lead Vocals"), and Woodshed says which
+  other track fit nearly as well. `--track backing` (part of a track's name) takes that one instead. On one of the
+  songs, the singer's pitch through a written note was within half a semitone of it for 73% of the notes.
+  `--no-tab` goes back to the melody heard. The tab goes with the reference: set another recording,
   and give the tab again. Repeats and alternate endings are followed; a Guitar Pro file with alternate endings or
   jumps (D.S., coda) isn't read.
 - Two sliders set how loud the band and the singer are: turn the singer down once you know the melody, and both

@@ -661,6 +661,10 @@ def reference(
     songsterr: Annotated[bool, typer.Option(
         "--songsterr", help="Get the tab from Songsterr instead: open the song's tab on songsterr.com, and click the To "
                             "Woodshed bookmark (the page this opens shows how to add it).")] = False,
+    track: Annotated[str | None, typer.Option(
+        "--track", metavar="NAME", show_default=False,
+        help="With --tab or --songsterr: the tab's track to sing along to, by part of its name (e.g. lead, or the "
+             "singer's), instead of the one found to follow the melody best.")] = None,
     no_tab: Annotated[bool, typer.Option("--no-tab", help="Sing along to the melody heard in the recording "
                                                           "again.")] = False,
     library: LibraryOpt = None,
@@ -696,11 +700,14 @@ def reference(
     if sum(map(bool, (tab, songsterr, no_tab))) > 1:
         console.print("Give one of --tab, --songsterr and --no-tab.")
         raise typer.Exit(1)
+    if track is not None and not (tab or songsterr):
+        console.print("--track picks one of the tracks of a tab: give it with --tab or --songsterr.")
+        raise typer.Exit(1)
     if tab and not tab.expanduser().is_file():
         console.print(f"There's no tab at {escape(str(tab))}.")
         raise typer.Exit(1)
     if (tab or songsterr or no_tab) and not (recording or link or search):
-        _set_tab(songs, song, None if no_tab else "songsterr" if songsterr else tab.expanduser())
+        _set_tab(songs, song, None if no_tab else "songsterr" if songsterr else tab.expanduser(), track)
         return
     if not (recording or link or search):
         if current := songs.reference(song):
@@ -750,12 +757,13 @@ def reference(
                       "melody: `shed progress` analyzes them the first time (it takes a while).")
     console.print(f"See how your takes compare: shed progress {escape(shlex.quote(song))}")
     if tab or songsterr:
-        _set_tab(songs, song, "songsterr" if songsterr else tab.expanduser())
+        _set_tab(songs, song, "songsterr" if songsterr else tab.expanduser(), track)
 
 
-def _set_tab(songs: Library, song: str, file: Path | Literal["songsterr"] | None) -> None:
+def _set_tab(songs: Library, song: str, file: Path | Literal["songsterr"] | None, track: str | None = None) -> None:
     """Lays a tab's melody over the song's reference recording, to sing along to its notes: a Guitar Pro file's, or
-    one from Songsterr; None goes back to the melody heard in the recording."""
+    one from Songsterr; None goes back to the melody heard in the recording. `track`: only its tracks with that in
+    their name."""
     from woodshed import along
     from woodshed import tab as tabs
 
@@ -772,20 +780,23 @@ def _set_tab(songs: Library, song: str, file: Path | Literal["songsterr"] | None
                       f"first, with shed reference {escape(shlex.quote(song))} --search, or with the recording.")
         raise typer.Exit(1)
     if file == "songsterr":
-        return _tab_from_songsterr(songs, song, current.contour)
+        return _tab_from_songsterr(songs, song, current.contour, track)
     try:
         with console.status("Finding the melody in the tab…"):
-            placed = tabs.place(tabs.tracks(file), current.contour, along.CONTOUR_HOP)
+            placed = tabs.place(tabs.tracks(file), current.contour, along.CONTOUR_HOP, track)
     except tabs.TabError as e:
         console.print(f"[red]Can't read {escape(file.name)}: {escape(str(e))}.[/red]")
         raise typer.Exit(1)
     if placed is None:
-        console.print(f"[red]{escape(_not_the_melody(file.name, song))}[/red]")
+        console.print(f"[red]{escape(_not_the_melody(file.name, song, track))}[/red]")
         raise typer.Exit(1)
     console.print(f"[green]✓[/green] {escape(_keep_tab(songs, song, placed, _tilde(file), file.name))}")
 
 
-def _not_the_melody(tab: str, song: str) -> str:
+def _not_the_melody(tab: str, song: str, track: str | None = None) -> str:
+    if track:
+        return (f"None of the tracks of {tab} named “{track}” follows the melody sung in the reference recording of "
+                f"“{song}”.")
     return (f"None of the tracks of {tab} follows the melody sung in the reference recording of “{song}”: is it a tab "
             "of this song, with its melody?")
 
@@ -796,11 +807,13 @@ def _keep_tab(songs: Library, song: str, placed, source: str, shown: str) -> str
                          "share": round(placed.share, 3), "key": placed.key})
     key = "" if not placed.key else (f", written {abs(placed.key)} semitone{'' if abs(placed.key) == 1 else 's'} "
                                      f"{'under' if placed.key > 0 else 'over'} the recording (a capo?)")
+    close = "" if not placed.close else (f" “{placed.close}” fit nearly as well: --track picks a track by its name "
+                                         "instead.")
     return (f"Singing along to “{song}” now goes by the {len(placed.notes)} notes of “{placed.track.name}” in "
-            f"{shown}{key}.")
+            f"{shown}{key}.{close}")
 
 
-def _tab_from_songsterr(songs: Library, song: str, contour: list) -> None:
+def _tab_from_songsterr(songs: Library, song: str, contour: list, track: str | None = None) -> None:
     """Waits for the To Woodshed bookmark to send a tab from songsterr.com, and lays it over the song's recording;
     a tab that doesn't fit is said so, and it waits for another."""
     import webbrowser
@@ -816,7 +829,7 @@ def _tab_from_songsterr(songs: Library, song: str, contour: list) -> None:
             with console.status("Downloading its tracks from Songsterr…"):
                 found = songsterr.download(tab)
             with console.status("Finding the melody in the tab…"):
-                placed = tabs.place(tabs.timed(songsterr.score(found)), contour, along.CONTOUR_HOP)
+                placed = tabs.place(tabs.timed(songsterr.score(found)), contour, along.CONTOUR_HOP, track)
         except tabs.TabError as e:
             message = f"Can't read it: {e}."
         else:
@@ -824,7 +837,7 @@ def _tab_from_songsterr(songs: Library, song: str, contour: list) -> None:
                 said = _keep_tab(songs, song, placed, tab.url or f"songsterr:{tab.id}", shown)
                 console.print(f"[green]✓[/green] {escape(said)}")
                 return True, f"✓ {said}"
-            message = _not_the_melody(shown, song)
+            message = _not_the_melody(shown, song, track)
         console.print(f"[red]{escape(message)}[/red] Waiting for another tab (Ctrl+C stops).")
         return False, f"{message} Try another tab of it."
 
