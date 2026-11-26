@@ -8,6 +8,10 @@ when that isn't clear, then showing how it rated.
 
 The page can also drill a song, as `shed drill` does (drill.Remote): it sends what its microphone hears, a fifth
 of a second at a time as 16-bit samples, and shows what comes back; it plays the word's note itself.
+
+And it can play a song's reference recording to sing along to (along.Session): it gets the recording and its
+melody, sends what its microphone hears as fast as answers come back (some 15 times a second), and draws the
+pitches read. Connections are kept open between requests, or each would start with a new handshake.
 """
 
 import hmac
@@ -34,6 +38,7 @@ from woodshed import audio
 from woodshed.library import Library
 
 if TYPE_CHECKING:
+    from woodshed.along import Session as Singing
     from woodshed.drill import Remote
 
 PORT = 8765
@@ -168,7 +173,8 @@ class Server(ThreadingHTTPServer):
 
     def __init__(self, songs: Library, secret: str, cert: Path, key: Path, port: int,
                  received: Callable[[Path, float, int], None], session: Session | None = None, filing: bool = False,
-                 max_bytes: int = MAX_UPLOAD_BYTES, drill: "Remote | None" = None):
+                 max_bytes: int = MAX_UPLOAD_BYTES, drill: "Remote | None" = None,
+                 sing: "Singing | None" = None):
         super().__init__(("0.0.0.0", port), _Handler)
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.load_cert_chain(cert, key)
@@ -177,7 +183,7 @@ class Server(ThreadingHTTPServer):
         self.socket = context.wrap_socket(self.socket, server_side=True, do_handshake_on_connect=False)
         self.songs, self.secret, self.received, self.max_bytes = songs, secret, received, max_bytes
         self.session, self.filing = session or Session(), filing  # filing: they're filed here as they come
-        self.drill = drill
+        self.drill, self.sing = drill, sing
         self._naming = threading.Lock()
 
     def server_bind(self) -> None:
@@ -237,6 +243,8 @@ def _started(header: str | None) -> datetime:
 
 class _Handler(BaseHTTPRequestHandler):
     server: Server
+    protocol_version = "HTTP/1.1"  # the connection stays open for the next request
+    timeout = 120  # a connection left open and silent that long is closed
 
     def log_message(self, format, *args) -> None:
         pass
@@ -249,6 +257,9 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        if status >= 400:  # what was sent with the request may not have been read: the next one starts afresh
+            self.send_header("Connection", "close")
+            self.close_connection = True
         self.end_headers()
         self.wfile.write(body)
 
@@ -267,6 +278,10 @@ class _Handler(BaseHTTPRequestHandler):
             drill = self.server.drill
             return self._json(200, available=drill is not None, songs=drill.titles if drill else [],
                               state=drill.state() if drill else None)
+        if url.path.startswith("/sing"):
+            if not self._allowed(self.headers.get(_KEY_HEADER)):
+                return self._json(403, error="this isn't the link `shed serve` shows")
+            return self._sing_get(url.path, parse_qs(url.query))
         if url.path != "/":
             return self._reply(404, "text/plain", b"Not found")
         if not self._allowed(parse_qs(url.query).get("key", [None])[0]):
@@ -282,6 +297,8 @@ class _Handler(BaseHTTPRequestHandler):
             return self._answer(answered[1])
         if path.startswith("/drill"):
             return self._drill(path)
+        if path.startswith("/sing"):
+            return self._sing(path)
         if path != "/takes":
             return self._json(404, error="not found")
         try:
@@ -351,3 +368,47 @@ class _Handler(BaseHTTPRequestHandler):
         if state is None:
             return self._json(409, error="nothing is being drilled: pick a song")
         self._json(200, state=state)
+
+    def _sing_get(self, path: str, asked: dict) -> None:
+        """Singing along from the phone: the songs it can pick (/sing), what its page draws of one (/sing/song),
+        and its recording (/sing/audio: `part` is "band" or "voice")."""
+        sing = self.server.sing
+        if path == "/sing":
+            return self._json(200, available=sing is not None, songs=sing.titles if sing else [])
+        if sing is None or path not in ("/sing/song", "/sing/audio"):
+            return self._json(404, error="not found")
+        title = asked.get("title", [""])[0]
+        try:
+            if path == "/sing/song":
+                return self._json(200, **sing.song(title))
+            return self._reply(200, "audio/mpeg", sing.audio(title, asked.get("part", [""])[0]))
+        except (ValueError, OSError):
+            return self._json(404, error="that song has no recording to sing along to")
+
+    def _sing(self, path: str) -> None:
+        """Your pitch as you sing along: /sing/start says how fast the microphone samples and for which song,
+        /sing/audio brings its sound and answers with the moments read (along.Live.feed()), /sing/stop ends it."""
+        sing = self.server.sing
+        if sing is None:
+            return self._json(404, error="this shed serve has no song to sing along to")
+        if path == "/sing/stop":
+            sing.stop()
+            return self._json(200, ok=True)
+        if path == "/sing/start":
+            asked = self._sent_json()
+            song, rate = (asked.get("song"), asked.get("rate")) if isinstance(asked, dict) else (None, None)
+            if not (isinstance(rate, int) and not isinstance(rate, bool) and 8000 <= rate <= 192_000):
+                return self._json(400, error="the page didn't say how fast its microphone samples")
+            try:
+                sing.start(song, rate)
+            except ValueError:
+                return self._json(404, error="that song has no recording to sing along to")
+            return self._json(200, ok=True)
+        if path != "/sing/audio":
+            return self._json(404, error="not found")
+        if (body := self._body(MAX_AUDIO_BYTES)) is None or len(body) % 2:
+            return self._json(400, error="that isn't the page's audio")
+        read = sing.hear(np.frombuffer(body, "<i2").astype(np.float32) / 32768)
+        if read is None:
+            return self._json(409, error="nothing is being sung along to: pick a song")
+        self._json(200, read=read)

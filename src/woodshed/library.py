@@ -35,6 +35,7 @@ _METRICS = "woodshed:metrics"
 _SOURCE = "woodshed:source"  # fingerprint of the file the take was made from, so it's never filed twice
 _MELODY = "woodshed:melody"  # its notes, words and chords, to compare it with a reference melody
 _REFERENCE = ".reference.json"  # in a song's folder: the melody its takes are rated against
+_BAND, _VOICE = ".reference-band.mp3", ".reference-voice.mp3"  # the recording itself, to sing along to (along.py)
 _SKIPPED = ".skipped.json"  # recordings found in folders and passed over, so they aren't checked again
 
 # Tuned on simulated transcripts (see tests/test_lyrics.py): the same song scores
@@ -64,6 +65,15 @@ class Reference:
     file: str  # the recording, as it was given: a file, or a link it was downloaded from
     added: datetime
     title: str | None = None  # a download's title
+    contour: list[float | None] | None = None  # its singer's pitch all through (along.contour()), to sing along to
+    band: Path | None = None  # the recording without its singer, and its singer alone: None unless both are kept
+    voice: Path | None = None
+    tab: dict | None = None  # its melody as a tab writes it, laid over the recording (set_tab()), to sing along to
+
+    @property
+    def sung_along(self) -> bool:
+        """Whether there's what singing along to it takes; a reference set before v0.9 needs setting again."""
+        return bool(self.melody and self.contour and self.band)
 
     def __str__(self) -> str:
         return f"{self.title} ({self.file})" if self.title else self.file
@@ -242,19 +252,47 @@ class Library:
     def reference(self, song: str) -> Reference | None:
         try:
             data = json.loads((self.root / song / _REFERENCE).read_text())
+            band, voice = self.root / song / _BAND, self.root / song / _VOICE
+            kept = band.is_file() and voice.is_file()
             return Reference(Melody.from_json(json.dumps(data["melody"])), data["file"],
-                             datetime.fromisoformat(data["added"]), data.get("title"))
+                             datetime.fromisoformat(data["added"]), data.get("title"), data.get("contour"),
+                             band if kept else None, voice if kept else None, data.get("tab"))
         except (FileNotFoundError, ValueError, KeyError, TypeError):
             return None
 
-    def set_reference(self, song: str, melody: Melody, file: str, title: str | None = None) -> None:
+    def set_reference(self, song: str, melody: Melody, file: str, title: str | None = None,
+                      contour: list[float | None] | None = None, stems=None) -> None:
+        """With `contour` and `stems` (isolate.Stems), the recording is kept too, its singer apart from the rest,
+        to sing along to."""
+        from woodshed import audio
+
         data = {"file": file, "added": f"{datetime.now():%Y-%m-%dT%H:%M}", "melody": json.loads(melody.to_json())}
         if title:
             data["title"] = title
+        for name in (_BAND, _VOICE):  # an earlier reference's
+            (self.root / song / name).unlink(missing_ok=True)
+        if contour and stems is not None:
+            data["contour"] = contour
+            audio.save_mp3(stems.accompaniment, stems.rate, self.root / song / _BAND)
+            audio.save_mp3(stems.vocals, stems.rate, self.root / song / _VOICE)
         (self.root / song / _REFERENCE).write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")))
+
+    def set_tab(self, song: str, tab: dict | None) -> None:
+        """The song's melody as a tab writes it: {"file", "track", "notes": [[start, end (in the reference
+        recording), semitones from A440]…], "share", "key"} (tab.Placed); None removes it. It goes with the
+        reference: setting another one drops it, as its notes are timed in that recording."""
+        path = self.root / song / _REFERENCE
+        data = json.loads(path.read_text())
+        if tab is None:
+            data.pop("tab", None)
+        else:
+            data["tab"] = tab
+        path.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")))
 
     def remove_reference(self, song: str) -> bool:
         """Whether there was one."""
+        for name in (_BAND, _VOICE):
+            (self.root / song / name).unlink(missing_ok=True)
         try:
             (self.root / song / _REFERENCE).unlink()
         except FileNotFoundError:

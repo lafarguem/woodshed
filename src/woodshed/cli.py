@@ -430,6 +430,22 @@ def _drilled(songs: Library, song: str, transpose: int | None) -> drilling.Song:
                          melody.transposed(melody.Comparison(shift % 12, True, [])))
 
 
+def _sung_along(songs: Library) -> list[str]:
+    """The songs whose reference keeps what singing along takes."""
+    return [s for s in songs.songs() if songs.has_reference(s) and (r := songs.reference(s)) and r.sung_along]
+
+
+def _to_sing_along(songs: Library, song: str) -> "along.Song":
+    """The song ready to sing along to, its melody in the octave your voice usually sits in, in your takes of it."""
+    from woodshed import along
+
+    reference = songs.reference(song)
+    sung = [t.melody for t in songs.takes_of(song, melody=True) if t.melody]
+    return along.Song(song, along.lines(reference.melody), reference.contour,
+                      along.octaves(reference.contour, drilling.register(sung[-RECENT_REGISTER:])),
+                      reference.band, reference.voice, reference.tab["notes"] if reference.tab else None)
+
+
 @app.command()
 def progress(
     name: Annotated[list[str], typer.Argument(help="The song; part of its name is enough.", show_default=False)],
@@ -638,6 +654,12 @@ def reference(
     search: Annotated[bool, typer.Option("--search", help="Look for the original on YouTube, even if the song has a "
                                                           "reference already. Needs yt-dlp: brew install yt-dlp")] = False,
     remove: Annotated[bool, typer.Option("--remove", help="Rate the song against its scale again.")] = False,
+    tab: Annotated[Path | None, typer.Option(
+        "--tab", metavar="FILE", show_default=False,
+        help="A tab of the song with its melody (a Guitar Pro .gp file, as Songsterr saves them): singing along, on "
+             "shed serve's page, then goes by the notes it writes instead of those heard in the recording.")] = None,
+    no_tab: Annotated[bool, typer.Option("--no-tab", help="Sing along to the melody heard in the recording "
+                                                          "again.")] = False,
     library: LibraryOpt = None,
     language: LanguageOpt = None,
 ):
@@ -667,6 +689,12 @@ def reference(
         had = songs.remove_reference(song)
         console.print(f"“{escape(song)}” is rated against its scale again." if had
                       else f"“{escape(song)}” has no reference melody.")
+        return
+    if tab and not tab.expanduser().is_file():
+        console.print(f"There's no tab at {escape(str(tab))}.")
+        raise typer.Exit(1)
+    if (tab or no_tab) and not (recording or link or search):
+        _set_tab(songs, song, None if no_tab else tab.expanduser())
         return
     if not (recording or link or search):
         if current := songs.reference(song):
@@ -701,12 +729,13 @@ def reference(
         except youtube.YouTubeError as e:
             console.print(f"[red]Couldn't get it from YouTube: {escape(str(e))}[/red]")
             raise typer.Exit(1)
-        sung = _follow_melody(recording, title or recording.name, language)
+        sung, contour, stems = _follow_melody(recording, title or recording.name, language)
     song = _reference_for(sung.lines, song, songs)
     if song is None:
         console.print("Nothing was changed.")
         return
-    songs.set_reference(song, sung, link or _tilde(recording), title)
+    with console.status("Keeping the recording to sing along to…"):
+        songs.set_reference(song, sung, link or _tilde(recording), title, contour, stems)
     console.print(f"[green]✓[/green] “{escape(song)}” is now rated against the melody of "
                   f"{escape(title or recording.name)} ({len(sung.lines)} lines heard).")
     older = sum(t.melody is None for t in songs.takes_of(song, melody=True))
@@ -714,6 +743,44 @@ def reference(
         console.print(f"{older} of its takes {'was' if older == 1 else 'were'} filed before Woodshed kept their "
                       "melody: `shed progress` analyzes them the first time (it takes a while).")
     console.print(f"See how your takes compare: shed progress {escape(shlex.quote(song))}")
+    if tab:
+        _set_tab(songs, song, tab.expanduser())
+
+
+def _set_tab(songs: Library, song: str, file: Path | None) -> None:
+    """Lays a tab's melody over the song's reference recording, to sing along to its notes; None goes back to the
+    melody heard in the recording."""
+    from woodshed import along
+    from woodshed import tab as tabs
+
+    current = songs.reference(song)
+    if file is None:
+        if current and current.tab:
+            songs.set_tab(song, None)
+            console.print(f"Singing along to “{escape(song)}” goes by the melody heard in its recording again.")
+        else:
+            console.print(f"“{escape(song)}” has no tab.")
+        return
+    if not (current and current.contour):
+        console.print(f"A tab is laid over the song's reference recording, and “{escape(song)}” has none kept: set it "
+                      f"first, with shed reference {escape(shlex.quote(song))} --search, or with the recording.")
+        raise typer.Exit(1)
+    try:
+        with console.status("Finding the melody in the tab…"):
+            placed = tabs.place(tabs.tracks(file), current.contour, along.CONTOUR_HOP)
+    except tabs.TabError as e:
+        console.print(f"[red]Can't read {escape(file.name)}: {escape(str(e))}.[/red]")
+        raise typer.Exit(1)
+    if placed is None:
+        console.print(f"[red]None of the tracks of {escape(file.name)} follows the melody sung in the reference "
+                      f"recording of “{escape(song)}”: is it a tab of this song, with its melody?[/red]")
+        raise typer.Exit(1)
+    songs.set_tab(song, {"file": _tilde(file), "track": placed.track.name, "notes": [list(n) for n in placed.notes],
+                         "share": round(placed.share, 3), "key": placed.key})
+    key = "" if not placed.key else (f", written {abs(placed.key)} semitone{'' if abs(placed.key) == 1 else 's'} "
+                                     f"{'under' if placed.key > 0 else 'over'} the recording (a capo?)")
+    console.print(f"[green]✓[/green] Singing along to “{escape(song)}” now goes by the {len(placed.notes)} notes of "
+                  f"“{escape(placed.track.name)}” in {escape(file.name)}{key}.")
 
 
 def _pick_original(song: str, songs: Library) -> str | None:
@@ -764,9 +831,10 @@ def _pick_video(videos: list[youtube.Video]) -> youtube.Video | str | None:
     return None
 
 
-def _follow_melody(recording: Path, name: str, language: str | None) -> melody.Melody:
-    """A reference recording's melody (see melody.extract()); stops if there isn't enough singing to follow."""
-    from woodshed import isolate, transcribe
+def _follow_melody(recording: Path, name: str, language: str | None) -> tuple[melody.Melody, list, "isolate.Stems"]:
+    """A reference recording's melody (see melody.extract()), its singer's pitch all through (along.contour()) and
+    its stems, all timed alike; stops if there isn't enough singing to follow."""
+    from woodshed import along, isolate, transcribe
 
     try:
         with console.status("Listening to the recording…"):
@@ -782,12 +850,13 @@ def _follow_melody(recording: Path, name: str, language: str | None) -> melody.M
     with console.status("Transcribing the lyrics…"):
         lines = transcribe.transcribe(stems.vocals_16k(), language)
     with console.status("Following the melody…"):
-        sung = melody.extract(stems, lines, rating.pitch_track(stems))
+        track = rating.pitch_track(stems)
+        sung = melody.extract(stems, lines, track)
     if len(sung.words) < MIN_REFERENCE_WORDS:
         console.print(f"[red]Heard only {len(sung.words)} words sung in {escape(name)}: too few to follow its "
                       "melody.[/red]")
         raise typer.Exit(1)
-    return sung
+    return sung, along.contour(track), stems
 
 
 def _reference_for(lines: list[str], named: str | None, songs: Library) -> str | None:
@@ -836,7 +905,8 @@ def serve(
 ):
     """Record from your phone: open the page this puts up on your Wi-Fi. Each take you record there is sent here and
     filed, and the page shows how it rated (and asks which song it is, when that isn't clear). The page can drill a
-    song too, as `shed drill` does."""
+    song too, as `shed drill` does, and play a song's reference recording to sing along to, your pitch drawn over
+    its melody."""
     settings = _settings()
     songs = Library(library or Path(settings.library), settings.take_format)
     for stuck in songs.incoming.glob("*.wav.filing"):  # a `shed serve` stopped while filing it: waiting again
@@ -849,6 +919,12 @@ def serve(
                             started=lambda title: console.print(f"[green]♪[/green] {datetime.now():%H:%M} Drilling "
                                                                 f"{escape(title)} from your phone"))
 
+    from woodshed import along
+
+    sing = along.Session(lambda title: _to_sing_along(songs, title), _sung_along(songs),
+                         started=lambda title: console.print(f"[green]♪[/green] {datetime.now():%H:%M} Singing along "
+                                                             f"to {escape(title)} from your phone"))
+
     def received(raw: Path, seconds: float, waiting: int) -> None:
         if filer:
             console.print(f"[green]✓[/green] {datetime.now():%H:%M} A take from your phone ({_clock(seconds)})")
@@ -858,7 +934,8 @@ def serve(
                           f"{waiting} waiting to be filed")
 
     try:
-        server = phone.Server(songs, secret, cert, key, port, received, session, filing=filer is not None, drill=drill)
+        server = phone.Server(songs, secret, cert, key, port, received, session, filing=filer is not None, drill=drill,
+                              sing=sing)
     except OSError as e:
         console.print(f"[red]Can't use port {port}: {escape(e.strerror or str(e))}.[/red] "
                       f"Try another: shed serve --port {port + 1}")
@@ -882,6 +959,13 @@ def serve(
                       "Ctrl+C stops.")
     console.print("[dim]Drill, on the page, finds the note of each word, one by one, then follows you as you sing, as "
                   "shed drill does.[/dim]")
+    if sing.titles:
+        console.print("[dim]Sing, on the page, plays a song's reference recording in your headphones, and draws your "
+                      "pitch over its melody as you sing along.[/dim]")
+    elif any(songs.has_reference(s) for s in songs.songs()):
+        console.print("[dim]To sing along to a song on the page, set its reference again (shed reference <song> "
+                      "--search, or with the recording): references set before v0.9 kept the melody's notes, not "
+                      "the recording.[/dim]")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

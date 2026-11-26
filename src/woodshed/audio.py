@@ -69,6 +69,18 @@ def export(src: Path, dst: Path, start: float, end: float) -> None:
           "-i", str(src), "-vn", "-map_metadata", "-1", *_CODECS[dst.suffix.lower()], str(dst)])
 
 
+def save_mp3(samples: np.ndarray, rate: int, dst: Path) -> None:
+    """Encode mono samples into an mp3 at `dst` (about 130 kbps: to listen to, not to analyze)."""
+    try:
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "f32le", "-ar", str(rate), "-ac", "1", "-i", "pipe:0",
+                        "-codec:a", "libmp3lame", "-q:a", "4", "-f", "mp3", str(dst)],
+                       input=np.asarray(samples, np.float32).tobytes(), capture_output=True, check=True)
+    except FileNotFoundError:
+        raise AudioError("ffmpeg is not installed (brew install ffmpeg)") from None
+    except subprocess.CalledProcessError as e:
+        raise AudioError(e.stderr.decode(errors="replace").strip()) from None
+
+
 def to_wav(src: Path, dst: Path) -> None:
     """Decode `src` into a 16-bit wav at `dst` (whatever its name), with its channels and sample rate."""
     _run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(src), "-vn", "-map_metadata", "-1",

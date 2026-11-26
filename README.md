@@ -90,7 +90,9 @@ shed play harbor --rating   # your worst take, then your best (or --pitch, --tim
 shed play harbor -t 3       # take 3 (--take 3)
 shed reference ~/Music/harbor-lights.mp3  # rate a song's pitch against the original's melody
 shed reference harbor       # …or find the original on YouTube (needs yt-dlp, see below)
+shed reference harbor --tab ~/Downloads/harbor.gp  # sing along to the notes a tab writes (see Singing along)
 shed drill harbor           # find the note of each word, one by one, then sing: where you sit against the melody shows
+shed serve                  # …or sing along to the original on the page's Sing tab, your pitch drawn over its melody
 shed devices                # microphones you can record from, and how they're connected
 shed init                   # change the folder, format, microphone, token or how takes are rated
 ```
@@ -125,6 +127,8 @@ order they arrive, so naming the first take of a new song lets the next ones be 
   takes do.
 - The page's Drill tab drills a song with a reference melody, as `shed drill` does (see Finding the notes), from
   the phone's microphone: the phone plays each word's note, and shows the tuner and the chart. Nothing is recorded.
+- The page's Sing tab plays a song's reference recording in your headphones, and draws your pitch over its
+  melody as you sing along (see Singing along).
 - Ctrl+C stops it. A take being filed is finished first; one whose song you haven't said yet waits for
   `shed add`, as does any take that couldn't be filed.
 - The page records music as it sounds: without the noise suppression, echo cancellation and automatic volume
@@ -281,7 +285,8 @@ downloads only the one you pick with the arrow keys: pick the studio version, si
 has another melody. If the original isn't there, because the song has no artist or the wrong one, pick
 "Search again with another artist…" and say who sings the original: it's kept for the song once you pick
 one of the videos found. You can also give it a link (`shed reference harbor
-https://www.youtube.com/watch?v=…`). The download is deleted as soon as its melody has been followed.
+https://www.youtube.com/watch?v=…`). The download is deleted as soon as its melody has been followed. What's kept is the melody, and the
+recording as two mp3s in the song's folder, to sing along to (see Singing along).
 yt-dlp isn't bundled with Woodshed because YouTube keeps changing, so it needs updating every few weeks
 (`brew upgrade yt-dlp`). Note that YouTube's terms don't allow downloading outside its own apps: whether to
 use this is up to you.
@@ -371,6 +376,56 @@ Harbor Lights
 - The microphone isn't listened to while the note plays, so the tuner doesn't take it for your voice.
 - Away from the Mac, drill from your phone: `shed serve`, then the page's Drill tab.
 
+### Singing along
+
+The Sing tab of `shed serve`'s page plays a song's reference recording, and draws what you sing over its singer's
+melody as it scrolls by, as karaoke games do. Put headphones on, so the microphone hears you and your instrument,
+not the recording. Nothing is recorded.
+
+- The melody is drawn as a band in every octave: blue in the octave its singer sings it in, grey in the others.
+  Your notes are drawn at the pitch you sang them, so you see which octave you're in. They're green on the
+  melody's note, yellow a semitone off, red further, going by the octave of the melody nearest them: any octave of
+  a note counts, and a fifth off is a fifth off in all of them. The picture, 20 semitones tall at most
+  so that no more than two of the melody's octaves show, starts on the octave your voice usually
+  sits in, in your takes of the song, and slides after your voice when it nears the top or the bottom; drag it up
+  or down (or scroll over it) to look elsewhere. Under the picture, the line being sung, the next one, and how much of what you sang was on the
+  melody's note.
+- Each note is a row of the picture. What you sang stays behind you as blocks, each filling the row of the note you
+  were on for as long as you were on it, with a thin line through them: your pitch itself. In the middle of its
+  block, the note is in tune; towards its edge, up to half a semitone off. Under the picture, the note you're on
+  and how many cents from it you are (from A at 440 Hz), on a small gauge: green within 15¢, yellow within 30¢,
+  red further.
+- The melody heard in a recording wanders: its singer slides into notes and bends them, and some are misheard.
+  With a tab of the song that has its melody, the picture shows the notes the tab writes instead, as blocks (what
+  the singer sings stays, as a thin faint line over them), and you're set against those: `shed reference harbor --tab ~/Downloads/harbor-lights.gp` (a Guitar Pro .gp file, as
+  Songsterr saves them; the older .gp5 and .gpx aren't read, nor is MIDI). Woodshed finds which of the tab's
+  tracks is the voice, and where its notes fall in the recording, in which key and at what tempo, by laying each
+  track over the melody it heard: on one song, the voice's notes fell on the singer's 40% of the time, the other
+  tracks' 15% at most, and the singer's pitch through a written note was within half a semitone of it for 73% of
+  the notes. `--no-tab` goes back to the melody heard. The tab goes with the reference: set another recording,
+  and give the tab again. A tab with alternate endings or jumps (D.S., coda) isn't read.
+- Two sliders set how loud the band and the singer are: turn the singer down once you know the melody, and both
+  once you have the rhythm. The melody keeps scrolling, in time.
+- Your notes are drawn about a fifth of a second after you sing them: the pitch tracker needs to hear a little of
+  what follows a moment to be sure of it (read as it's sung, it got 29% of the sung moments right; 0.1 s later, 61%).
+- It follows your voice over your instrument, which a tuner can't. On 90 s of each of 8 takes, voice and guitar in
+  one microphone, it drew 63% of the sung moments plainly at the right note and 2% at a wrong one, and 12% of the
+  guitar alone as a voice. A tuner's way of finding the pitch got 23% right, and took the guitar alone for a voice
+  a third of the time.
+- Where it's less sure the sound is your voice, the dots are faint: with them, 80% of the sung moments are at the
+  right note, 8% at a wrong one, and 30% of the guitar alone is drawn. They don't count in the figures under the
+  picture.
+- The louder your voice against your instrument, the more of it is drawn: 97% of the sung moments with the voice
+  10 dB over the instrument, 52% with it up to 10 dB under. Keep the phone near your mouth.
+- Nothing is assumed of what you sing: the melody's note isn't used to find yours, so a note far off is drawn where
+  it is.
+- If your notes are drawn late or early against the melody (Bluetooth headphones are later than the browser
+  knows, and turn the microphone to phone-call quality: wired ones are better), the arrows under the sliders move
+  them, 20 ms at a time. The phone remembers it.
+- It needs the recording, which `shed reference` keeps since v0.9, as two mp3s in the song's folder (its singer,
+  and the rest: about 5 MB a song). Set the reference again for a song whose reference is older.
+- The page works on the Mac too: open its link in a browser there.
+
 ## The library is just folders
 
 ```
@@ -379,6 +434,7 @@ Harbor Lights
     2026-06-02_21-14.mp3
     2026-09-21_18-30.mp3
     .reference.json   (if you gave it one: the melody it's rated against)
+    .reference-band.mp3, .reference-voice.mp3   (its recording, to sing along to)
   Unsorted/
 ```
 

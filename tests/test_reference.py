@@ -436,3 +436,21 @@ def test_lines_need_a_reference(harbor):
                                       "its lines against. Give it one: shed reference 'Harbor Lights'" in text(result)
     both = harbor("progress", "harbor", "--lines", "--take", "1")
     assert both.exit_code == 1 and "Choose one of --take and --lines" in text(both)
+
+
+def test_the_recording_is_kept_to_sing_along_to_and_goes_with_the_reference(harbor):
+    set_reference(harbor)
+    kept = harbor.library.reference("Harbor Lights")
+    assert kept.sung_along and kept.contour[:2] == [-12.0, -12.0] and kept.contour[-1] is None
+    folder = harbor.library.root / "Harbor Lights"
+    assert kept.band == folder / ".reference-band.mp3" and kept.voice == folder / ".reference-voice.mp3"
+    assert kept.band.stat().st_size > 500 and kept.voice.stat().st_size > 500
+    assert len(harbor.library.songs()["Harbor Lights"]) == 1  # they aren't takes
+
+    harbor("reference", "harbor", "--remove")
+    assert not kept.band.exists() and not kept.voice.exists()
+
+
+def test_a_reference_set_before_recordings_were_kept_cant_be_sung_along_to(harbor):
+    harbor.library.set_reference("Harbor Lights", sing(), "original.mp3")
+    assert not harbor.library.reference("Harbor Lights").sung_along

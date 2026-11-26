@@ -75,13 +75,42 @@
   #d-arrow { font-weight: 700; font-size: 18px; margin-top: 6px; min-height: 1.4em; }
   .drill-actions { display: flex; gap: 10px; justify-content: center; margin-top: 22px; }
   #d-stop { margin-top: 14px; }
+  #sing-songs { display: flex; flex-direction: column; gap: 8px; width: min(420px, 94vw); }
+  #sing-songs button, .sing-actions button { font: inherit; padding: 11px 14px; border-radius: 10px;
+                                             border: 1px solid var(--dim); background: var(--card); color: var(--fg); }
+  #sing { width: min(720px, 96vw); text-align: center; }
+  #sing .dim, #sing-view .dim { color: var(--dim); }
+  #s-song { font-weight: 600; font-size: 19px; }
+  #s-roll { display: block; width: 100%; height: 340px; margin: 10px 0 6px; border-radius: 12px; background: var(--card);
+            touch-action: none; }
+  #s-tuner { display: flex; gap: 12px; align-items: center; justify-content: center; min-height: 34px; }
+  #s-note { font-weight: 700; font-size: 24px; min-width: 2.6em; text-align: right; }
+  #s-cents { font-variant-numeric: tabular-nums; min-width: 3.6em; text-align: left; }
+  #s-meter { position: relative; width: 160px; height: 14px; }
+  #s-meter::before { content: ""; position: absolute; left: 0; right: 0; top: 6px; height: 2px; background: var(--dim);
+                     opacity: .4; }
+  #s-meter::after { content: ""; position: absolute; left: 50%; top: 0; width: 2px; height: 14px; margin-left: -1px;
+                    background: var(--dim); }
+  #s-needle { position: absolute; top: 1px; width: 12px; height: 12px; margin-left: -6px; border-radius: 50%; z-index: 1; }
+  #s-line { font-size: 20px; min-height: 1.5em; }
+  #s-line .to-come { color: var(--dim); }
+  #s-next { font-size: 15px; min-height: 1.5em; }
+  #s-score { margin-top: 8px; font-size: 15px; min-height: 1.5em; }
+  .sing-actions { display: flex; gap: 10px; justify-content: center; margin-top: 14px; flex-wrap: wrap; }
+  #s-play { font-weight: 600; min-width: 6.5em; }
+  .sliders { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; align-items: center; width: min(420px, 94vw);
+             margin: 16px auto 0; font-size: 15px; text-align: left; }
+  .sliders input { width: 100%; accent-color: var(--ok); }
+  #s-sync { display: flex; gap: 10px; align-items: center; justify-content: center; margin-top: 12px; font-size: 14px; }
+  #s-sync button { font: inherit; width: 34px; height: 30px; border-radius: 8px; border: 1px solid var(--dim);
+                   background: var(--card); color: var(--fg); }
   [hidden] { display: none !important; }
 </style>
 </head>
 <body>
   <h1>Woodshed</h1>
   <div class="tabs"><button type="button" id="tab-record" class="on">Record</button><button type="button"
-    id="tab-drill">Drill</button></div>
+    id="tab-drill">Drill</button><button type="button" id="tab-sing">Sing</button></div>
   <div class="view" id="record-view">
   <p class="hint">Each take you record here is sent to your Mac and filed under its song.</p>
   <button id="record" type="button">Record</button>
@@ -123,6 +152,36 @@
       </div>
       <div class="drill-actions"><button type="button" id="d-stop">Stop</button></div>
       <p class="dim">Say “switch to” and a song's name, your instrument quiet, to drill that one.</p>
+    </div>
+  </div>
+  <div class="view" id="sing-view" hidden>
+    <p class="hint" id="sing-hint">Sing along to a song's reference recording: put headphones on (wired ones if you
+      can), so the microphone hears you and your instrument, not the recording. Its singer's melody scrolls by, and
+      what you sing is drawn over it. Nothing is recorded.</p>
+    <div id="sing-songs"></div>
+    <div id="sing" hidden>
+      <div><span id="s-song"></span> <span id="s-clock" class="dim"></span></div>
+      <canvas id="s-roll"></canvas>
+      <div id="s-tuner"><span id="s-note"></span><div id="s-meter"><div id="s-needle" hidden></div></div><span
+        id="s-cents" class="dim"></span></div>
+      <div id="s-line"></div>
+      <div id="s-next" class="dim"></div>
+      <div id="s-score" class="dim"></div>
+      <div class="sing-actions">
+        <button type="button" id="s-start">⏮ Start</button>
+        <button type="button" id="s-back">−10 s</button>
+        <button type="button" id="s-play">▶ Play</button>
+        <button type="button" id="s-forward">+10 s</button>
+      </div>
+      <div class="sliders">
+        <label for="s-band">Band</label><input type="range" id="s-band" min="0" max="1" step="0.05">
+        <label for="s-voice">Singer</label><input type="range" id="s-voice" min="0" max="1" step="0.05">
+      </div>
+      <div id="s-sync" class="dim">Your notes drawn late or early?
+        <button type="button" id="s-earlier">◀</button><span id="s-shift"></span><button type="button" id="s-later">▶</button>
+      </div>
+      <div class="sing-actions"><button type="button" id="s-stop">Another song</button></div>
+      <p class="dim" id="s-wait"></p>
     </div>
   </div>
 <script>
@@ -344,13 +403,16 @@ const drilling = { context: null, stream: null, node: null, pieces: [], sending:
                    deafUntil: 0, wakeLock: null };
 const TONE_SECONDS = 1.5, AFTER_TONE = 0.3, SEND_EVERY = 200;
 
-function tab(drill) {
+function tab(name) {
   if (recorder) return;  // a take is being recorded
-  $("tab-record").classList.toggle("on", !drill);
-  $("tab-drill").classList.toggle("on", drill);
-  $("record-view").hidden = drill;
-  $("drill-view").hidden = !drill;
-  if (drill) songsToDrill(); else stopDrilling();
+  for (const view of ["record", "drill", "sing"]) {
+    $(`tab-${view}`).classList.toggle("on", view === name);
+    $(`${view}-view`).hidden = view !== name;
+  }
+  if (name !== "drill") stopDrilling();
+  if (name !== "sing") stopSinging();
+  if (name === "drill") songsToDrill();
+  if (name === "sing") songsToSing();
 }
 
 async function songsToDrill(why) {
@@ -553,8 +615,505 @@ function showDrill(state) {
     : !state.chart && !state.singing ? "Then sing the song: where you sit against the melody shows here." : "";
 }
 
-$("tab-record").addEventListener("click", () => tab(false));
-$("tab-drill").addEventListener("click", () => tab(true));
+// Singing along: the song's reference recording plays here (in your headphones), its singer's melody scrolls by, and
+// the microphone goes to the Mac as fast as it answers, with the pitches it read: drawn over the melody, at the time
+// in the song they were sung. The recording and the microphone share the page's audio clock.
+const singing = { context: null, stream: null, node: null, pieces: [], anchors: [], sent: 0, song: null, buffers: {},
+                  gains: {}, sources: [], playing: false, startedAt: 0, offset: 0, trace: [], wakeLock: null, frame: 0,
+                  shownLine: -2, scoredAt: 0, goal: null };
+const SPAN = 6, NOW_AT = 0.3;  // seconds of the song across the picture, and where "now" is in it
+const NOTE_REACH = 0.1;  // …or against a tab's note that starts or ends this close
+const TARGET_REACH = 0.25;  // a note of yours is set against the melody's nearest, this close in time
+const NOTES = ["A", "A♯", "B", "C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯"];
+const stored = (name, otherwise) => {
+  try { const value = parseFloat(localStorage.getItem(name)); return Number.isFinite(value) ? value : otherwise; }
+  catch (_) { return otherwise; }
+};
+const store = (name, value) => { try { localStorage.setItem(name, String(value)); } catch (_) { /* not kept */ } };
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function songsToSing(why) {
+  $("sing").hidden = true;
+  $("sing-hint").hidden = false;
+  const list = $("sing-songs");
+  list.hidden = false;
+  list.replaceChildren(element("div", why || "", "dim"));
+  let answer;
+  try {
+    const response = await fetch("sing", { headers: { "X-Woodshed-Key": key }, cache: "no-store" });
+    answer = await response.json();
+  } catch (_) {
+    list.replaceChildren(element("div", "Your Mac didn't answer: is shed serve still running?", "dim"));
+    return;
+  }
+  if (!answer.available || !answer.songs.length) {
+    list.replaceChildren(element("div", "No song has a recording to sing along to yet: set a song's reference on your " +
+                                        "Mac with shed reference (again, if it was set before Woodshed 0.9).", "dim"));
+    return;
+  }
+  for (const song of answer.songs) {
+    const choice = element("button", song);
+    choice.type = "button";
+    choice.addEventListener("click", () => startSinging(song));
+    list.append(choice);
+  }
+}
+
+async function startSinging(title) {
+  stopSinging();
+  const list = $("sing-songs");
+  const say = (text) => list.replaceChildren(element("div", text, "dim"));
+  try {
+    singing.stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+  } catch (error) {
+    list.prepend(element("div", error.name === "NotAllowedError"
+      ? "The microphone isn't allowed: allow it for this page (the icon next to the address), then try again."
+      : `Can't use the microphone: ${error.message}`, "dim"));
+    return;
+  }
+  const context = singing.context = new AudioContext();
+  await context.resume();
+  say("Getting the recording…");
+  const query = `title=${encodeURIComponent(title)}`, headers = { "X-Woodshed-Key": key };
+  let song, band, voice;
+  try {
+    const get = async (path) => {
+      const response = await fetch(path, { headers, cache: "no-store" });
+      if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || `the Mac answered ${response.status}`);
+      return response;
+    };
+    [song, band, voice] = await Promise.all([
+      get(`sing/song?${query}`).then((r) => r.json()),
+      get(`sing/audio?${query}&part=band`).then((r) => r.arrayBuffer()).then((data) => context.decodeAudioData(data)),
+      get(`sing/audio?${query}&part=voice`).then((r) => r.arrayBuffer()).then((data) => context.decodeAudioData(data))]);
+    if (singing.context !== context) return;  // stopped meanwhile
+    singing.song = song;
+    singing.buffers = { band, voice };
+    say("Getting the pitch tracker ready…");
+    const started = await fetch("sing/start", { method: "POST", headers: { ...headers, "Content-Type": "application/json" },
+                                                body: JSON.stringify({ song: title, rate: context.sampleRate }) });
+    if (!started.ok) throw new Error((await started.json().catch(() => ({}))).error || `the Mac answered ${started.status}`);
+  } catch (error) {
+    stopSinging();
+    songsToSing(error instanceof TypeError ? "Your Mac didn't answer: is shed serve still running?"
+                                           : `Couldn't get the song: ${error.message}.`);
+    return;
+  }
+  if (singing.context !== context) return;
+  const source = context.createMediaStreamSource(singing.stream);
+  const take = (samples, time) => singing.pieces.push({ samples, time });  // what the microphone heard, and when
+  if (context.audioWorklet) {
+    const code = `registerProcessor("heard", class extends AudioWorkletProcessor {
+      process(inputs) { if (inputs[0][0]) this.port.postMessage({ samples: inputs[0][0].slice(0), time: currentTime });
+                        return true; } });`;
+    await context.audioWorklet.addModule(URL.createObjectURL(new Blob([code], { type: "text/javascript" })));
+    singing.node = new AudioWorkletNode(context, "heard");
+    singing.node.port.onmessage = (event) => take(event.data.samples, event.data.time);
+  } else {
+    singing.node = context.createScriptProcessor(1024, 1, 1);
+    singing.node.onaudioprocess = (event) => take(event.inputBuffer.getChannelData(0).slice(0),
+                                                   context.currentTime - 1024 / context.sampleRate);
+  }
+  const silent = context.createGain();
+  silent.gain.value = 0;
+  source.connect(singing.node);
+  singing.node.connect(silent).connect(context.destination);  // it only runs when connected
+  for (const part of ["band", "voice"]) {
+    singing.gains[part] = context.createGain();
+    singing.gains[part].connect(context.destination);
+    const slider = $(`s-${part}`);
+    slider.value = stored(`woodshed-${part}`, part === "band" ? 0.8 : 0.5);
+    singing.gains[part].gain.value = slider.value;
+  }
+  try {  // not waited for: a browser can leave it unanswered
+    navigator.wakeLock.request("screen").then((lock) => {
+      if (singing.context === context) singing.wakeLock = lock; else lock.release().catch(() => {});
+    }, () => {});
+  } catch (_) { /* the screen may sleep */ }
+  fitPicture();
+  singing.seconds = Math.min(band.duration, voice.duration);
+  singing.shift = stored("woodshed-sync", 0);
+  list.hidden = true;
+  $("sing-hint").hidden = true;
+  $("sing").hidden = false;
+  $("s-song").textContent = song.title;
+  $("s-wait").textContent = "";
+  showShift();
+  sendSung(context);
+  singing.frame = requestAnimationFrame(drawSung);
+}
+
+function stopSinging() {
+  cancelAnimationFrame(singing.frame);
+  if (singing.stream) singing.stream.getTracks().forEach((track) => track.stop());
+  const was = singing.context;
+  if (was) {
+    was.close().catch(() => {});
+    fetch("sing/stop", { method: "POST", headers: { "X-Woodshed-Key": key } }).catch(() => {});
+  }
+  if (singing.wakeLock) singing.wakeLock.release().catch(() => {});
+  Object.assign(singing, { context: null, stream: null, node: null, pieces: [], anchors: [], sent: 0, song: null,
+                           buffers: {}, gains: {}, sources: [], playing: false, startedAt: 0, offset: 0, trace: [],
+                           wakeLock: null, frame: 0, shownLine: -2, scoredAt: 0, goal: null });
+  $("s-play").textContent = "▶ Play";
+}
+
+// How long the recording takes to reach your ears, and your voice to reach the page, as the browser tells it; and
+// what you've added to it (headphones, Bluetooth ones most of all, are later than the browser knows).
+function delay() {
+  const context = singing.context;
+  const settings = singing.stream.getAudioTracks()[0].getSettings ? singing.stream.getAudioTracks()[0].getSettings() : {};
+  return { out: context.outputLatency || context.baseLatency || 0, total: (context.outputLatency || context.baseLatency || 0)
+           + (settings.latency || 0) + singing.shift / 1000 };
+}
+
+// Where in the song you are: what your ears hear now.
+function position() {
+  if (!singing.playing) return singing.offset;
+  return Math.min(singing.seconds, Math.max(0, singing.context.currentTime - singing.startedAt - delay().out) + singing.offset);
+}
+
+function playFrom(offset) {
+  const context = singing.context;
+  pauseSinging();
+  offset = Math.max(0, Math.min(singing.seconds - 0.1, offset));
+  singing.trace = singing.trace.filter((point) => point.t < offset);  // sung again from there
+  const when = context.currentTime + 0.1;
+  singing.sources = ["band", "voice"].map((part) => {
+    const source = context.createBufferSource();
+    source.buffer = singing.buffers[part];
+    source.connect(singing.gains[part]);
+    source.start(when, offset);
+    return source;
+  });
+  Object.assign(singing, { playing: true, startedAt: when, offset });
+  $("s-play").textContent = "⏸ Pause";
+}
+
+function pauseSinging() {
+  if (!singing.playing) return;
+  const at = position();
+  for (const source of singing.sources) { try { source.stop(); } catch (_) { /* not started */ } }
+  Object.assign(singing, { playing: false, offset: at, sources: [] });
+  $("s-play").textContent = "▶ Play";
+}
+
+// The picture starts on the melody in the octave your voice usually sits in: around its middle note, as tall as
+// most of the melody (all but its lowest and highest tenths) and 4 semitones either side, but no more than 20
+// semitones, so that no more than two of the melody's octaves show at once. It follows your voice from there.
+function fitPicture() {
+  const pitches = (singing.song.notes ? singing.song.notes.map((note) => note[2])
+                                      : singing.song.contour.pitch.filter((p) => p !== null)).sort((a, b) => a - b);
+  const part = (share) => pitches[Math.floor((pitches.length - 1) * share)];
+  const span = Math.max(14, Math.min(20, Math.ceil(part(0.9) - part(0.1)) + 8));
+  singing.low = Math.round(part(0.5) + 12 * singing.song.octaves - span / 2);
+  singing.high = singing.low + span;
+  singing.goal = null;
+}
+
+// The picture follows your voice: when your latest notes are all within EDGE semitones of its top or bottom, or past
+// it, it slides until they're that far inside (drawSung() does the sliding). A single stray note doesn't move it.
+const EDGE = 3, FOLLOWED = 8;
+function followVoice() {
+  const latest = singing.trace.slice(-3 * FOLLOWED).filter((point) => point.sure).slice(-FOLLOWED);
+  if (latest.length < FOLLOWED || latest[FOLLOWED - 1].t - latest[0].t > 0.5) return;
+  const span = singing.high - singing.low, low = singing.goal === null ? singing.low : singing.goal;
+  const lowest = Math.min(...latest.map((point) => point.pitch)), highest = Math.max(...latest.map((point) => point.pitch));
+  if (lowest > low + span - EDGE) singing.goal = highest + EDGE - span;
+  else if (highest < low + EDGE) singing.goal = lowest - EDGE;
+}
+
+// The picture moved up or down by `pixels`: dragged, or scrolled with a wheel or trackpad.
+function panPicture(pixels, from) {
+  const canvas = $("s-roll"), span = singing.high - singing.low;
+  const low = (from === undefined ? singing.low : from) + pixels * span / canvas.clientHeight;
+  singing.low = Math.max(-60, Math.min(48 - span, low));  // from A−1 to A8
+  singing.high = singing.low + span;
+  singing.goal = null;
+}
+
+// What the melody's singer sings nearest a time in the song, as sung; null if nothing within reach.
+function melodyNear(t) {
+  if (singing.song.notes) {  // the melody as a tab writes it: the note written then, or just before or after
+    let nearest = null, gap = NOTE_REACH;
+    for (const [start, end, pitch] of singing.song.notes) {
+      const away = Math.max(start - t, t - end, 0);
+      if (away < gap) { nearest = pitch; gap = away; }
+      if (start > t + NOTE_REACH) break;
+    }
+    return nearest;
+  }
+  const { hop, pitch } = singing.song.contour, at = Math.round(t / hop), reach = Math.round(TARGET_REACH / hop);
+  for (let d = 0; d <= reach; d++) {
+    for (const i of [at - d, at + d]) {
+      if (pitch[i] !== null && pitch[i] !== undefined) return pitch[i];
+    }
+  }
+  return null;
+}
+
+// A pitch read by the Mac, `seconds` after the first sample sent: drawn at the time in the song it was sung at, at
+// the pitch it was sung at. How far off it is, is from the melody in the octave nearest it: the melody is drawn in
+// every octave, so a note is seen where it is, and a fifth off is a fifth off whichever octave you sing in.
+function sung(seconds, pitch, sure) {
+  if (pitch === null || !singing.playing) return;
+  const sample = seconds * singing.context.sampleRate;
+  let anchor = singing.anchors[0];
+  for (const candidate of singing.anchors) { if (candidate.at <= sample) anchor = candidate; else break; }
+  const heard = anchor.time + (sample - anchor.at) / singing.context.sampleRate;
+  const t = heard - singing.startedAt - delay().total + singing.offset;
+  if (heard < singing.startedAt || t < singing.offset) return;  // sung before the recording (re)started
+  const melody = melodyNear(t), off = melody === null ? null : ((pitch - melody + 6) % 12 + 12) % 12 - 6;
+  const point = { t, pitch, off, sure: sure >= singing.song.sure };
+  singing.trace.push(point);
+  if (point.sure) followVoice();
+}
+
+// Sends what's been heard since the last piece, as soon as the Mac has answered for the one before.
+async function sendSung(context) {
+  while (singing.context === context) {
+    const pieces = singing.pieces, count = pieces.reduce((n, piece) => n + piece.samples.length, 0);
+    if (count < 0.05 * context.sampleRate) { await sleep(10); continue; }
+    singing.pieces = [];
+    const pcm = new Int16Array(count);
+    let at = 0;
+    for (const piece of pieces) {
+      singing.anchors.push({ at: singing.sent + at, time: piece.time });
+      for (const x of piece.samples) pcm[at++] = Math.max(-32768, Math.min(32767, Math.round(x * 32768)));
+    }
+    singing.sent += count;
+    singing.anchors = singing.anchors.slice(-2000);
+    let answer = null, status = 0;
+    try {
+      const response = await fetch("sing/audio", { method: "POST", body: pcm.buffer,
+                                                    headers: { "X-Woodshed-Key": key, "Content-Type": "application/octet-stream" } });
+      status = response.status;
+      answer = await response.json().catch(() => null);
+    } catch (_) { /* the Mac is out of reach */ }
+    if (singing.context !== context) return;
+    if (status === 200 && answer) {
+      $("s-wait").textContent = "";
+      for (const [seconds, pitch, sure] of answer.read) sung(seconds, pitch, sure);
+    } else if (status === 409) {
+      stopSinging();
+      songsToSing("It stopped while the page was away: pick the song again.");
+      return;
+    } else {
+      $("s-wait").textContent = "Your Mac didn't answer: is shed serve still running, and the phone on the same Wi-Fi?";
+      await sleep(1000);
+    }
+  }
+}
+
+function drawSung() {
+  if (!singing.context) return;
+  singing.frame = requestAnimationFrame(drawSung);
+  const canvas = $("s-roll"), scale = window.devicePixelRatio || 1;
+  const width = canvas.clientWidth, height = canvas.clientHeight;
+  if (canvas.width !== Math.round(width * scale) || canvas.height !== Math.round(height * scale)) {
+    canvas.width = Math.round(width * scale);
+    canvas.height = Math.round(height * scale);
+  }
+  const ink = canvas.getContext("2d"), style = getComputedStyle(document.documentElement);
+  const color = (name) => style.getPropertyValue(name).trim();
+  ink.setTransform(scale, 0, 0, scale, 0, 0);
+  ink.clearRect(0, 0, width, height);
+  if (singing.goal !== null) {  // sliding to where your voice is
+    const span = singing.high - singing.low, left = singing.goal - singing.low;
+    singing.low = Math.abs(left) < 0.05 ? singing.goal : singing.low + left * 0.12;
+    singing.high = singing.low + span;
+    if (singing.low === singing.goal) singing.goal = null;
+  }
+  const now = position(), { low, high, song } = singing;
+  if (singing.playing && now >= singing.seconds - 0.05) pauseSinging();
+  const x = (t) => (NOW_AT + (t - now) / SPAN) * width, step = height / (high - low);
+  const y = (pitch) => height - (pitch - low) * step;
+  // The note you're on, and how far from its middle: the middle of your latest sure moments, while you sing.
+  const latest = singing.trace.slice(-3 * TUNED_OVER).filter((point) => point.sure && now - point.t < 0.6).slice(-TUNED_OVER);
+  showTuning(latest.length < 3 ? null : latest.map((point) => point.pitch).sort((a, b) => a - b)[latest.length >> 1]);
+  // Each note is a row, those of the notes with a sharp shaded as a piano's black keys are.
+  const dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+  ink.font = "11px -apple-system, sans-serif";
+  ink.textBaseline = "middle";
+  let named = Infinity;  // where the last name was written: they're kept apart
+  for (let note = Math.ceil(low - 0.5); note < high + 0.5; note++) {  // the picture may sit between two notes
+    const name = NOTES[((note % 12) + 12) % 12];
+    if (name.length > 1) {  // darker than the others, on a light page or a dark one
+      ink.globalAlpha = dark ? 0.38 : 0.1;
+      ink.fillStyle = "#000";
+      ink.fillRect(0, y(note + 0.5), width, step);
+    }
+    if ((name.length === 1 || step >= 13) && named - y(note) >= 12) {
+      named = y(note);
+      ink.globalAlpha = 0.65;
+      ink.fillStyle = color("--dim");
+      ink.fillText(`${name}${Math.floor((note + 69) / 12) - 1}`, 4, y(note));
+    }
+  }
+  // The melody: each stretch sung without a break, as a band half a semitone thick, in every octave in the picture. The
+  // octave its singer sings it in stands out; the others are fainter.
+  // With a tab, its notes are the melody: each a block filling its row for as long as it's written. What the
+  // singer sings is then a thin faint line over them, to see how they go about the notes.
+  const { hop, pitch } = song.contour;
+  for (const [start, end, written] of song.notes || []) {
+    if (end < now - NOW_AT * SPAN || start > now + (1 - NOW_AT) * SPAN) continue;
+    for (let octave = -5; octave <= 5; octave++) {
+      const at = written + 12 * octave;
+      if (at < low - 1 || at > high + 1) continue;
+      ink.globalAlpha = octave ? 0.38 : 0.55;
+      ink.fillStyle = octave ? color("--dim") : "#5b8fd9";
+      ink.fillRect(x(start), y(at + 0.5) + 1, Math.max(x(end) - x(start) - 1, 2), step - 2);
+    }
+  }
+  const from = Math.max(0, Math.floor((now - NOW_AT * SPAN) / hop) - 1);
+  const to = Math.min(pitch.length - 1, Math.ceil((now + (1 - NOW_AT) * SPAN) / hop) + 1);
+  ink.lineWidth = song.notes ? 1.5 : Math.max(5, step * 0.5);
+  ink.lineCap = ink.lineJoin = "round";
+  for (let octave = -5; octave <= 5; octave++) {
+    ink.globalAlpha = song.notes ? (octave ? 0.3 : 0.45) : octave ? 0.3 : 0.6;
+    ink.strokeStyle = octave ? color("--dim") : song.notes ? "#8fb3e6" : "#5b8fd9";
+    let drawing = false;
+    ink.beginPath();
+    for (let i = from; i <= to; i++) {
+      const at = pitch[i] === null ? null : pitch[i] + 12 * octave;
+      if (at === null || at < low - 1 || at > high + 1) { drawing = false; continue; }
+      const px = x(i * hop), py = y(at);
+      if (drawing && Math.abs(pitch[i] - pitch[i - 1]) < 1.5) ink.lineTo(px, py);
+      else { ink.moveTo(px, py); ink.lineTo(px + 0.01, py); }
+      drawing = true;
+    }
+    ink.stroke();
+  }
+  // What you sang: each note you were on is a block filling its row for as long as you were on it, green on the
+  // melody's note, yellow a semitone off, red further (fainter where the tracker is less sure it's your voice), and
+  // through the blocks a thin line, your pitch itself: in the middle of a block, the note is in tune.
+  const left = now - NOW_AT * SPAN;
+  let first = singing.trace.length;
+  while (first > 0 && singing.trace[first - 1].t >= left - 1) first--;
+  const kind = (point) => (point.off === null ? "--fg" : Math.abs(point.off) < 0.5 ? "--ok"
+    : Math.abs(point.off) < 1.5 ? "yellow" : "--accent");
+  const joined = (a, b) => a && b && Math.abs(a.t - b.t) < 0.06;
+  for (let i = first; i < singing.trace.length;) {
+    const start = singing.trace[i], note = Math.round(start.pitch);
+    let end = i;
+    while (end + 1 < singing.trace.length && joined(singing.trace[end], singing.trace[end + 1])
+           && Math.round(singing.trace[end + 1].pitch) === note && singing.trace[end + 1].sure === start.sure
+           && kind(singing.trace[end + 1]) === kind(start)) end++;
+    const from = x(start.t) - 0.5, to = x(singing.trace[end].t) + 0.5;
+    ink.globalAlpha = start.sure ? 0.75 : 0.25;
+    ink.fillStyle = kind(start) === "yellow" ? "#b7950b" : color(kind(start));
+    ink.fillRect(from, y(note + 0.5) + step * 0.2, Math.max(to - from, 1.5), step * 0.6);  // the melody's shows around it
+    i = end + 1;
+  }
+  ink.lineWidth = 1.2;
+  ink.strokeStyle = color("--fg");
+  ink.globalAlpha = 0.95;
+  ink.beginPath();
+  for (let i = first; i < singing.trace.length; i++) {
+    const point = singing.trace[i], before = singing.trace[i - 1];
+    if (i > first && joined(before, point) && Math.abs(point.pitch - before.pitch) < 2) ink.lineTo(x(point.t), y(point.pitch));
+    else { ink.moveTo(x(point.t) - 0.6, y(point.pitch)); ink.lineTo(x(point.t), y(point.pitch)); }
+  }
+  ink.stroke();
+  ink.globalAlpha = 0.8;
+  ink.fillStyle = color("--fg");
+  ink.fillRect(NOW_AT * width, 0, 1.5, height);
+  ink.globalAlpha = 1;
+  showSungLine(now);
+  $("s-clock").textContent = `${clock(now)} / ${clock(singing.seconds)}`;
+  if (performance.now() - singing.scoredAt > 500) {
+    singing.scoredAt = performance.now();
+    const judged = singing.trace.filter((point) => point.sure && point.off !== null);
+    const share = (within) => Math.round(100 * judged.filter((point) => Math.abs(point.off) < within).length / judged.length);
+    $("s-score").textContent = judged.length < 100 ? ""
+      : `Of what you sang: ${share(0.5)}% on the melody's note (in any octave), ${share(1.5)}% a semitone off at most`;
+  }
+}
+
+// Under the picture: the note you're on, and how far from its middle you are, on a line from half a semitone under
+// to half a semitone over. Green within TUNED cents, yellow within twice that, red further.
+const TUNED = 15, TUNED_OVER = 8;
+function showTuning(voice) {
+  const needle = $("s-needle");
+  needle.hidden = voice === null;
+  if (voice === null) {
+    $("s-note").textContent = $("s-cents").textContent = "";
+    return;
+  }
+  const note = Math.round(voice), cents = Math.round(100 * (voice - note));
+  $("s-note").textContent = `${NOTES[((note % 12) + 12) % 12]}${Math.floor((note + 69) / 12) - 1}`;
+  $("s-cents").textContent = `${cents > 0 ? "+" : cents < 0 ? "−" : ""}${Math.abs(cents)}¢`;
+  needle.style.left = `${50 + cents}%`;
+  needle.style.background = Math.abs(cents) <= TUNED ? "var(--ok)" : Math.abs(cents) <= 2 * TUNED ? "#b7950b" : "var(--accent)";
+}
+
+// The line being sung, the words sung so far set apart from those to come; under it, the next one.
+function showSungLine(now) {
+  const lines = singing.song.lines;
+  let current = -1;
+  for (let i = 0; i < lines.length && lines[i].start <= now + 1; i++) current = i;
+  if (current >= 0 && now > lines[current].end + 2 && current + 1 < lines.length) current += 0.5;  // between two lines
+  const line = Number.isInteger(current) && current >= 0 ? lines[current] : null;
+  const words = line ? line.words.filter((word) => word[1] <= now).length : 0;
+  const shown = `${current}:${words}`;
+  if (shown === singing.shownLine) return;
+  singing.shownLine = shown;
+  const next = lines[Math.floor(current) + 1];
+  if (line) {
+    // The line as heard, cut after as many of its words as have been sung.
+    const spans = [...line.text.matchAll(/[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)*/gu)];
+    const cut = words >= spans.length ? line.text.length : words ? spans[words].index : 0;
+    $("s-line").replaceChildren(line.text.slice(0, cut), element("span", line.text.slice(cut), "to-come"));
+  } else $("s-line").replaceChildren();
+  $("s-next").textContent = next ? next.text : "";
+}
+
+function showShift() {
+  $("s-shift").textContent = singing.shift ? `${Math.abs(singing.shift)} ms ${singing.shift > 0 ? "earlier" : "later"}`
+                                             : "as heard";
+}
+
+$("s-play").addEventListener("click", () => (singing.playing ? pauseSinging() : playFrom(
+  singing.offset >= singing.seconds - 0.2 ? 0 : singing.offset)));
+$("s-start").addEventListener("click", () => playFrom(0));
+$("s-back").addEventListener("click", () => playFrom(position() - 10));
+$("s-forward").addEventListener("click", () => playFrom(position() + 10));
+$("s-stop").addEventListener("click", () => { stopSinging(); songsToSing(); });
+for (const part of ["band", "voice"]) {
+  $(`s-${part}`).addEventListener("input", (event) => {
+    if (singing.gains[part]) singing.gains[part].gain.value = event.target.value;
+    store(`woodshed-${part}`, event.target.value);
+  });
+}
+{
+  const canvas = $("s-roll");
+  let held = null;  // where the drag started, and where the picture was then
+  canvas.addEventListener("pointerdown", (event) => {
+    if (!singing.song) return;
+    held = { y: event.clientY, low: singing.low };
+    canvas.setPointerCapture(event.pointerId);
+  });
+  canvas.addEventListener("pointermove", (event) => { if (held) panPicture(event.clientY - held.y, held.low); });
+  for (const end of ["pointerup", "pointercancel"]) canvas.addEventListener(end, () => { held = null; });
+  canvas.addEventListener("wheel", (event) => {
+    if (!singing.song) return;
+    event.preventDefault();
+    panPicture(-Math.max(-40, Math.min(40, event.deltaY * 0.3)));  // a wheel's notch: 2 or 3 semitones
+  }, { passive: false });
+}
+// Drawn late: they're moved earlier, by taking the recording to reach your ears later still.
+for (const [id, by] of [["s-earlier", 20], ["s-later", -20]]) {
+  $(id).addEventListener("click", () => {
+    singing.shift = Math.max(-200, Math.min(600, singing.shift + by));
+    store("woodshed-sync", singing.shift);
+    showShift();
+  });
+}
+
+$("tab-record").addEventListener("click", () => tab("record"));
+$("tab-drill").addEventListener("click", () => tab("drill"));
+$("tab-sing").addEventListener("click", () => tab("sing"));
 for (const [id, step, line] of [["d-back", -1, false], ["d-again", 0, false], ["d-next", 1, false],
                                 ["d-line-back", -1, true], ["d-line-next", 1, true]]) {
   $(id).addEventListener("click", async () => {

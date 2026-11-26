@@ -18,7 +18,7 @@ from conftest import SONGS, add_take, mishear, recording
 from test_drill import harbor, voice  # noqa: F401 (a fixture)
 from test_melody import LINES, sing
 
-from woodshed import audio, cli, config, drill, isolate, phone
+from woodshed import along, audio, cli, config, drill, isolate, phone, rmvpe
 from woodshed.library import Library
 
 
@@ -431,3 +431,91 @@ def test_shed_serve_offers_to_drill_the_songs_with_a_reference(shed, monkeypatch
     result = shed("serve")
     assert served[0].titles == ["Harbor Lights"]
     assert "Drill, on the page, finds the note of each word, one by one" in " ".join(result.output.split())
+
+
+@pytest.fixture
+def singing(tmp_path, monkeypatch):
+    """`shed serve`'s server, with Harbor Lights to sing along to; the pitch tracker hears an A4, surely."""
+    monkeypatch.setattr(rmvpe, "pitch", lambda samples, device=None: (np.full(len(samples) // 160 + 1, 440.0),
+                                                                      np.full(len(samples) // 160 + 1, 0.9)))
+    songs = Library(tmp_path / "lib")
+    cert, key, secret = phone.credentials(tmp_path / "phone")
+    (tmp_path / "band.mp3").write_bytes(b"the band")
+    (tmp_path / "voice.mp3").write_bytes(b"the singer")
+    session = along.Session(lambda title: along.Song(title, along.lines(sing()), [0.0, None, 2.0], 1,
+                                                     tmp_path / "band.mp3", tmp_path / "voice.mp3"), ["Harbor Lights"])
+    running = phone.Server(songs, secret, cert, key, 0, lambda *take: None, sing=session)
+    threading.Thread(target=running.serve_forever, daemon=True).start()
+    yield SimpleNamespace(port=running.server_address[1], secret=secret)
+    running.shutdown()
+    running.server_close()
+
+
+def sing_request(server, path, body=None, key=None, raw=False):
+    headers = {"X-Woodshed-Key": server.secret if key is None else key}
+    if isinstance(body, dict):
+        body = json.dumps(body).encode()
+    status, answer = request(server, "GET" if body is None else "POST", path, body, headers)
+    return status, answer if raw else json.loads(answer or b"{}")
+
+
+def test_the_page_sings_along_to_a_song(singing):
+    status, answer = sing_request(singing, "/sing")
+    assert status == 200 and answer == {"available": True, "songs": ["Harbor Lights"]}
+    assert sing_request(singing, "/sing", key="guess")[0] == 403
+    assert sing_request(singing, "/sing/song?title=Winter%20Town")[0] == 404
+
+    status, song = sing_request(singing, "/sing/song?title=Harbor%20Lights")
+    assert status == 200 and song["title"] == "Harbor Lights" and song["octaves"] == 1
+    assert song["contour"] == {"hop": 0.02, "pitch": [0.0, None, 2.0]} and song["lines"][0]["text"] == LINES[0]
+    assert sing_request(singing, "/sing/audio?title=Harbor%20Lights&part=band", raw=True) == (200, b"the band")
+    assert sing_request(singing, "/sing/audio?title=Harbor%20Lights&part=voice", raw=True) == (200, b"the singer")
+    assert sing_request(singing, "/sing/audio?title=Harbor%20Lights&part=drums")[0] == 404
+
+    piece = np.full(14_400, 3000, "<i2").tobytes()  # 0.3 s
+    assert sing_request(singing, "/sing/audio", piece)[0] == 409  # not started
+    assert sing_request(singing, "/sing/start", {"song": "Harbor Lights"})[0] == 400  # at what rate?
+    assert sing_request(singing, "/sing/start", {"song": "Winter Town", "rate": 48_000})[0] == 404
+    assert sing_request(singing, "/sing/start", {"song": "Harbor Lights", "rate": 48_000})[0] == 200
+    status, answer = sing_request(singing, "/sing/audio", piece)
+    assert status == 200 and answer["read"][0] == [0.0, 0.0, 0.9] and answer["read"][-1][0] == pytest.approx(0.18)
+    assert sing_request(singing, "/sing/audio", b"\0\0\0")[0] == 400  # not 16-bit samples
+    assert sing_request(singing, "/sing/stop", b"")[0] == 200
+    assert sing_request(singing, "/sing/audio", piece)[0] == 409
+
+
+def test_a_connection_is_kept_for_the_next_request(singing):
+    connection = http.client.HTTPSConnection("127.0.0.1", singing.port, context=ssl._create_unverified_context(),
+                                             timeout=30)
+    for _ in range(3):  # http.client would raise on a connection the server closed
+        connection.request("GET", "/sing", headers={"X-Woodshed-Key": singing.secret})
+        response = connection.getresponse()
+        assert response.status == 200 and json.loads(response.read())["available"]
+        assert not response.will_close
+    connection.request("GET", "/sing", headers={"X-Woodshed-Key": "guess"})
+    assert connection.getresponse().will_close  # refused: it starts afresh
+
+
+def test_a_server_with_nothing_to_sing_along_to_says_so(server):
+    assert sing_request(server, "/sing") == (200, {"available": False, "songs": []})
+    assert sing_request(server, "/sing/song?title=Harbor%20Lights")[0] == 404
+    assert sing_request(server, "/sing/start", {"song": "Harbor Lights", "rate": 48_000})[0] == 404
+
+
+def test_shed_serve_offers_to_sing_along_to_the_songs_whose_recording_is_kept(shed, monkeypatch, tone, tmp_path):
+    served = []
+    monkeypatch.setattr(phone, "Server", lambda *args, **kwargs: served.append(kwargs["sing"]) or FakeServer(*args))
+    add_take(shed.library, tone, "Harbor Lights", 2, 7, datetime(2026, 6, 1, 20, 0), LINES)
+    shed.library.set_reference("Harbor Lights", sing(), "original.mp3")  # as before recordings were kept
+
+    result = shed("serve")
+    assert served[0].titles == []
+    assert "To sing along to a song on the page, set its reference again" in " ".join(result.output.split())
+
+    shed.melody = sing()
+    assert shed("reference", "harbor", str(recording(tmp_path, "original.mp3"))).exit_code == 0
+    result = shed("serve")
+    assert served[1].titles == ["Harbor Lights"]
+    assert "Sing, on the page, plays a song's reference recording in your headphones" in " ".join(result.output.split())
+    song = served[1].song("Harbor Lights")
+    assert song["octaves"] == 0 and song["contour"]["pitch"][0] == -12.0 and len(song["lines"]) == 6

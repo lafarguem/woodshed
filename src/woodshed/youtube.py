@@ -1,7 +1,8 @@
 """Finding a song's original recording on YouTube, through yt-dlp if you've installed it (brew install yt-dlp).
 
-It's only used when you ask (`shed reference`), and only downloads the video you pick. The recording is
-deleted once its melody has been followed: woodshed keeps the melody, not the recording. yt-dlp is left to
+It's only used when you ask (`shed reference`), and only downloads the video you pick. The download is
+deleted once its melody has been followed: what's kept, in the song's folder, is the melody and the recording as
+two mp3s to sing along to, its singer and the rest (library.set_reference()). yt-dlp is left to
 you, not bundled, because YouTube keeps changing and yt-dlp needs updating every few weeks to keep up.
 """
 

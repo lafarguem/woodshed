@@ -171,11 +171,13 @@ def shed(tmp_path, monkeypatch):
     shed = Shed(Library(tmp_path / "lib"))
     config.save(config.Config(library=str(shed.library.root)))
     monkeypatch.setattr(cli.models, "missing", lambda: [])
+    hum = (0.1 * np.sin(2 * np.pi * 220 * np.arange(8000) / 8000)).astype(np.float32)  # a second of each stem
     monkeypatch.setattr(isolate, "separate", lambda src, start=0.0, seconds=None: SimpleNamespace(
-        vocals_16k=lambda seconds=None: np.zeros(1, np.float32)))
+        vocals_16k=lambda seconds=None: np.zeros(1, np.float32), vocals=hum, accompaniment=hum / 2, rate=8000))
     monkeypatch.setattr(transcribe, "transcribe", lambda samples, language=None: shed.transcribed.append(1) or [
         transcribe.Line(line, []) for line in shed.heard])
-    monkeypatch.setattr(rating, "pitch_track", lambda stems: None)
+    monkeypatch.setattr(rating, "pitch_track", lambda stems: rating.Track(  # an A3 held for a second, then silence
+        np.full(200, 220.0), np.repeat([0.9, 0.1], 100), 0.0, 0.01))
     monkeypatch.setattr(rating, "analyze", lambda stems, track=None: shed.metrics)
     monkeypatch.setattr(melody, "extract", lambda stems, lines, track: shed.melody)
     monkeypatch.setattr(youtube, "available", lambda: False)  # whether or not yt-dlp is installed here
