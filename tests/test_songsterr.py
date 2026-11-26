@@ -134,10 +134,17 @@ def test_the_bookmark_opens_woodshed_with_the_tab():
     assert "Harbor &lt;Lights&gt;" in page and "?pattern=The%20Tides%20Harbor%20Lights" in page
 
 
-def test_the_page_waits_for_a_tab_until_one_fits():
+def test_the_page_follows_the_tabs_sent_until_one_fits():
     answers = iter([(False, "None of its tracks follows the melody"), (True, "✓ Done")])
-    received = []
-    server = songsterr.Waiting(0, "<p>the page</p>", lambda sent: (received.append(sent), next(answers))[1])
+    reading, go_on, received = threading.Event(), threading.Event(), []
+
+    def receive(sent):
+        received.append(sent)
+        reading.set()
+        go_on.wait(5)
+        return next(answers)
+
+    server = songsterr.Waiting(0, "<p>the page</p>", receive)
     port = server.server_port
     thread = threading.Thread(target=server.serve_forever)
     thread.start()
@@ -148,17 +155,50 @@ def test_the_page_waits_for_a_tab_until_one_fits():
         response = connection.getresponse()
         return response.status, response.read().decode()
 
+    def status():
+        return json.loads(ask("GET", "/status")[1])
+
+    def send():
+        answered.append(json.loads(ask("POST", "/tab", json.dumps(SENT))[1]))
+
     try:
         assert ask("GET", "/") == (200, "<p>the page</p>")
         assert ask("GET", "/", host="songsterr.evil.example")[0] == 404  # a name made to lead here
         assert ask("POST", "/tab", "{}", kind="text/plain")[0] == 404  # what another site's page could send
-        assert received == []
-        status, body = ask("POST", "/tab", json.dumps(SENT))
-        assert status == 200 and json.loads(body) == {"ok": False, "message": "None of its tracks follows the melody"}
-        assert not server.done
-        assert json.loads(ask("POST", "/tab", json.dumps(SENT))[1])["ok"] is True
-        thread.join(5)
-        assert not thread.is_alive() and server.done and received == [SENT, SENT]
+        assert received == [] and status() == {"state": "waiting", "message": ""}
+
+        answered = []
+        sending = threading.Thread(target=send)
+        sending.start()
+        assert reading.wait(5)
+        assert status() == {"state": "reading", "message": "Reading “Harbor Lights”… (see the terminal)"}
+        go_on.set()
+        sending.join(5)
+        assert answered == [{"ok": False, "message": "None of its tracks follows the melody"}]
+        assert status()["state"] == "failed" and not server.done
+
+        send()
+        assert answered[-1] == {"ok": True, "message": "✓ Done"} and server.done
+        assert thread.is_alive()  # until the page following it is told
+        assert status() == {"state": "done", "message": "✓ Done"}
+        thread.join(2)
+        assert not thread.is_alive() and received == [SENT, SENT]
+    finally:
+        go_on.set()
+        server.shutdown()
+        server.server_close()
+
+
+def test_without_a_page_following_it_it_stops_soon_after_a_tab_fits(monkeypatch):
+    monkeypatch.setattr(songsterr.Waiting, "LINGER", 0.1)
+    server = songsterr.Waiting(0, "", lambda sent: (True, "✓ Done"))
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        assert server.receive(SENT) == (True, "✓ Done")
+        thread.join(2)
+        assert not thread.is_alive()
+        assert server.receive(SENT) == (True, "✓ Done")  # a second click doesn't read it again
     finally:
         server.shutdown()
         server.server_close()
@@ -201,7 +241,7 @@ def test_shed_reference_gets_a_tab_from_songsterr(harbor, monkeypatch):
     result = harbor("reference", "harbor", "--songsterr")
     assert result.exit_code == 0, result.output
     assert said[0][0] is False and "None of the tracks of Songsterr's tab of “Other”" in said[0][1]
-    assert said[1][0] is True and "You can close this page" in said[1][1]
+    assert said[1][0] is True and said[1][1].startswith("✓ Singing along to “Harbor Lights”")
     shown = text(result)
     assert "Waiting for another tab" in shown
     assert ("Singing along to “Harbor Lights” now goes by the 48 notes of “Singer” in Songsterr's tab of “Harbor "

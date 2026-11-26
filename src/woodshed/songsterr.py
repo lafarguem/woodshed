@@ -2,9 +2,10 @@
 
 Songsterr turns away pages and API calls that don't come from a browser (a "Quick check"), so a bookmark does the
 asking: clicked on the song's tab on songsterr.com, it reads where Songsterr keeps that tab (the song, its revision
-and tracks, which the page embeds) and opens Woodshed's page on this Mac with it. While `shed reference <song>
---songsterr` waits, that page is served here (wait()), and hands it on: each track is then downloaded from
-Songsterr's CDN, which serves anyone, and read (score()).
+and tracks, which the page embeds) and opens Woodshed's page on this Mac with it, in a small window. While `shed reference <song>
+--songsterr` waits, that page is served here (Waiting), and hands it on: each track is then downloaded from
+Songsterr's CDN, which serves anyone, and read (score()). The page `shed` opened follows it (/status): reading,
+then found, when it closes itself, or why the tab doesn't fit.
 
 - A track is a list of bars, each with its beats: how long (a fraction of a whole note, dots and tuplets counted in),
   and the notes, as a string and a fret on the track's tuning (string 0 the highest).
@@ -26,7 +27,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from html import escape
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import quote, urlsplit
 
 from woodshed.tab import Score, TabError, played
@@ -180,15 +181,19 @@ def search(query: str) -> str:
 
 
 def bookmarklet(port: int = PORT) -> str:
-    """The bookmark, clicked on a song's tab on songsterr.com: it opens Woodshed's page with where the tab is."""
+    """The bookmark, clicked on a song's tab on songsterr.com: it opens a small window of Woodshed's page with where
+    the tab is, which hands it on, and closes once the tab is found (a window a script opened may close itself)."""
     script = """(function () {
   var page = 'http://127.0.0.1:%d/';
-  function fail(why) { alert('Woodshed: ' + why); }
+  var popup = null;
+  function fail(why) { if (popup) popup.close(); alert('Woodshed: ' + why); }
   var ids = location.pathname.match(/-s(\\d+)/g);
   if (!/(^|\\.)songsterr\\.com$/.test(location.hostname) || !ids) {
     return fail('open a song\\u2019s tab on songsterr.com, then click this bookmark.');
   }
   var id = Number(ids[ids.length - 1].slice(2));
+  /* Opened now, on the click: a window opened later, once the page is read again, would be blocked. */
+  popup = window.open('', 'woodshed', 'popup,width=480,height=260');
   function read(doc) {
     try {
       var current = JSON.parse(doc.getElementById('state').textContent).meta.current;
@@ -203,7 +208,7 @@ def bookmarklet(port: int = PORT) -> str:
                 isDrums: t.isDrums};
       })});
     var to = page + '#' + encodeURIComponent(tab);
-    if (!window.open(to, 'woodshed')) location.href = to;
+    if (popup) popup.location.href = to; else location.href = to;
   }
   var current = read(document);
   if (current) return send(current);
@@ -233,8 +238,11 @@ ol { padding-left: 1.3rem; } li { margin: .6rem 0; } a { color: var(--acc); }
             background: var(--card); color: var(--fg); text-decoration: none; font-weight: 600; cursor: grab; }
 #status { margin-top: 1.5rem; padding: 1rem; border: 1px solid var(--bd); border-radius: .6rem;
           background: var(--card); }
+#status.ok { border-color: var(--ok); } #status.bad { border-color: var(--bad); }
 .ok { color: var(--ok); } .bad { color: var(--bad); } .mut { color: var(--mut); font-size: .9rem; }
 textarea { width: 100%; box-sizing: border-box; font: 12px ui-monospace, Menlo, monospace; }
+body.sending h1, body.sending ol { display: none; }
+body.sending main { padding-top: 1rem; } body.sending #status { margin-top: 0; }
 </style>
 <main>
 <h1>A tab of “{song}” from Songsterr</h1>
@@ -248,28 +256,65 @@ textarea { width: 100%; box-sizing: border-box; font: 12px ui-monospace, Menlo, 
   One with the singer’s track (often named after them, or “Vocals”).</li>
 <li>Click the <b>To Woodshed</b> bookmark there.</li>
 </ol>
-<div id="status">Waiting for the tab… <span class="mut">(Woodshed stops waiting when you press Ctrl+C in the
-terminal.)</span></div>
+<div id="status"></div>
 </main>
 <script>
-window.name = 'woodshed';  // the bookmark opens the tab here, when this page is open
-var status = document.getElementById('status');
-function say(text, kind) { status.className = kind || ''; status.textContent = text; }
-function receive() {
+var box = document.getElementById('status');
+function say(text, kind, note) {
+  box.className = kind || '';
+  box.textContent = text;
+  if (note) {
+    var small = document.createElement('div');
+    small.className = 'mut';
+    small.textContent = note;
+    box.appendChild(small);
+  }
+}
+var GONE = 'Woodshed isn’t waiting for a tab anymore: run shed reference <song> --songsterr again.';
+
+/* Opened by the bookmark, with the tab after the #: hand it on, then close once it's found. */
+function send() {
   var sent = location.hash.slice(1);
-  if (!sent) return;
+  if (!sent) return false;
+  document.body.className = 'sending';
   history.replaceState(null, '', location.pathname);
   var tab;
-  try { tab = JSON.parse(decodeURIComponent(sent)); } catch (e) { return say('That isn’t a tab.', 'bad'); }
-  say('Reading “' + (tab.title || 'the tab') + '”… (see the terminal)');
+  try { tab = JSON.parse(decodeURIComponent(sent)); } catch (e) { say('That isn’t a tab.', 'bad'); return true; }
+  say('Reading “' + (tab.title || 'the tab') + '”…');
   fetch('/tab', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(tab)})
     .then(function (r) { return r.json(); })
-    .then(function (answer) { say(answer.message, answer.ok ? 'ok' : 'bad'); })
-    .catch(function () { say('Woodshed isn’t waiting for a tab anymore: run shed reference <song> --songsterr ' +
-                             'again.', 'bad'); });
+    .then(function (answer) {
+      say(answer.message, answer.ok ? 'ok' : 'bad', answer.ok ? '' : 'Click the bookmark on another tab of it.');
+      if (answer.ok) setTimeout(function () { window.close(); }, 1500);
+    })
+    .catch(function () { say(GONE, 'bad'); });
+  return true;
 }
-window.addEventListener('hashchange', receive);
-receive();
+
+/* Opened by shed: follow what becomes of the tabs the bookmark sends, and close once one is found. */
+function follow() {
+  say('Waiting for the tab…', '', 'Woodshed stops waiting when you press Ctrl+C in the terminal.');
+  var shown = '';
+  function check() {
+    fetch('/status').then(function (r) { return r.json(); }).then(function (now) {
+      if (now.message !== shown) {
+        shown = now.message;
+        if (now.state === 'reading') say(now.message);
+        else if (now.state === 'failed') say(now.message, 'bad', 'Still waiting: click the bookmark on another tab of it.');
+        else if (now.state === 'done') say(now.message, 'ok', 'This page closes itself.');
+      }
+      if (now.state !== 'done') return setTimeout(check, 500);
+      setTimeout(function () {
+        window.close();
+        say(now.message, 'ok', 'You can close this page.');  // when the browser doesn't let it close
+      }, 2500);
+    }).catch(function () { say(GONE, 'bad'); });
+  }
+  check();
+}
+
+window.addEventListener('hashchange', send);  // the bookmark's window, sent another tab
+if (!send()) follow();
 </script>
 """
 
@@ -280,13 +325,20 @@ def page(song_name: str, query: str, port: int = PORT) -> str:
             .replace("{bar}", "⌘⇧B shows it"))
 
 
-class Waiting(HTTPServer):
+class Waiting(ThreadingHTTPServer):
     """Woodshed's page while it waits for a tab: what the bookmark sends goes to `received(sent)`, which answers
-    (whether it was laid over the recording, what to say); once one is, it stops."""
+    (whether it was laid over the recording, what to say); once one is, it stops, when the page that follows it
+    has been told (or after LINGER seconds, if none is open)."""
+
+    daemon_threads = True
+    LINGER = 3.0
 
     def __init__(self, port: int, shown: str, received: Callable[[object], tuple[bool, str]]):
         super().__init__(("127.0.0.1", port), _Handler)
         self.shown, self.received, self.done = shown, received, False
+        self.state = {"state": "waiting", "message": ""}  # what /status says: "reading", "failed" or "done" next
+        self._one = threading.Lock()  # a tab at a time
+        self._told = threading.Event()
 
     def server_bind(self) -> None:  # not HTTPServer's, which looks this Mac's name up (socket.getfqdn): slow, unneeded
         socketserver.TCPServer.server_bind(self)
@@ -294,6 +346,29 @@ class Waiting(HTTPServer):
 
     def handle_error(self, request, client_address) -> None:
         pass
+
+    def receive(self, sent) -> tuple[bool, str]:
+        with self._one:
+            if self.done:
+                return True, self.state["message"]
+            title = sent.get("title") if isinstance(sent, dict) and isinstance(sent.get("title"), str) else ""
+            self.state = {"state": "reading", "message": f"Reading “{title[:300] or 'the tab'}”… (see the terminal)"}
+            ok, message = self.received(sent)
+            self.state = {"state": "done" if ok else "failed", "message": message}
+            if ok:
+                self.done = True
+                threading.Thread(target=self._stop, daemon=True).start()
+            return ok, message
+
+    def status(self) -> dict:
+        state = dict(self.state)
+        if state["state"] == "done":
+            self._told.set()
+        return state
+
+    def _stop(self) -> None:
+        self._told.wait(self.LINGER)
+        self.shutdown()
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -315,8 +390,11 @@ class _Handler(BaseHTTPRequestHandler):
         return self.headers.get("Host") in (f"127.0.0.1:{self.server.server_port}", f"localhost:{self.server.server_port}")
 
     def do_GET(self) -> None:
-        if not self._local() or urlsplit(self.path).path != "/":
+        path = urlsplit(self.path).path
+        if not self._local() or path not in ("/", "/status"):
             return self._reply(404, "text/plain", b"Not found")
+        if path == "/status":
+            return self._reply(200, "application/json", json.dumps(self.server.status()).encode())
         self._reply(200, "text/html; charset=utf-8", self.server.shown.encode())
 
     def do_POST(self) -> None:
@@ -328,8 +406,5 @@ class _Handler(BaseHTTPRequestHandler):
             sent = json.loads(self.rfile.read(length)) if 0 < length <= 1 << 20 else None
         except ValueError:
             sent = None
-        ok, message = self.server.received(sent)
+        ok, message = self.server.receive(sent)
         self._reply(200, "application/json", json.dumps({"ok": ok, "message": message}).encode())
-        if ok:
-            self.server.done = True
-            threading.Thread(target=self.server.shutdown, daemon=True).start()

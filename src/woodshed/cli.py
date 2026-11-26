@@ -823,7 +823,7 @@ def _tab_from_songsterr(songs: Library, song: str, contour: list) -> None:
             if placed is not None:
                 said = _keep_tab(songs, song, placed, tab.url or f"songsterr:{tab.id}", shown)
                 console.print(f"[green]✓[/green] {escape(said)}")
-                return True, f"✓ {said} You can close this page."
+                return True, f"✓ {said}"
             message = _not_the_melody(shown, song)
         console.print(f"[red]{escape(message)}[/red] Waiting for another tab (Ctrl+C stops).")
         return False, f"{message} Try another tab of it."
