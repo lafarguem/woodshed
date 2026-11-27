@@ -69,6 +69,7 @@ class Reference:
     band: Path | None = None  # the recording without its singer, and its singer alone: None unless both are kept
     voice: Path | None = None
     tab: dict | None = None  # its melody as a tab writes it, laid over the recording (set_tab()), to sing along to
+    lyrics: dict | None = None  # its lyrics as written, timed in the recording (set_lyrics()); None: not looked for
 
     @property
     def sung_along(self) -> bool:
@@ -256,7 +257,7 @@ class Library:
             kept = band.is_file() and voice.is_file()
             return Reference(Melody.from_json(json.dumps(data["melody"])), data["file"],
                              datetime.fromisoformat(data["added"]), data.get("title"), data.get("contour"),
-                             band if kept else None, voice if kept else None, data.get("tab"))
+                             band if kept else None, voice if kept else None, data.get("tab"), data.get("lyrics"))
         except (FileNotFoundError, ValueError, KeyError, TypeError):
             return None
 
@@ -288,6 +289,20 @@ class Library:
         else:
             data["tab"] = tab
         path.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")))
+
+    def set_lyrics(self, song: str, lyrics: dict) -> None:
+        """The song's lyrics as written, to show while singing along instead of the words heard in the recording:
+        {"from": the page they're from, "lines": as along.written() times them (none: they weren't the
+        recording's)}. They go with the reference, as a tab does."""
+        path = self.root / song / _REFERENCE
+        data = json.loads(path.read_text())
+        data["lyrics"] = lyrics
+        path.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")))
+
+    def genius_id(self, song: str) -> int | None:
+        """The song Genius recognized the most of its takes as."""
+        ids = [t.genius_id for t in self.takes_of(song) if t.genius_id]
+        return max(set(ids), key=ids.count) if ids else None
 
     def remove_reference(self, song: str) -> bool:
         """Whether there was one."""

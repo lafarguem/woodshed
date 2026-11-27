@@ -1,4 +1,10 @@
-"""Recognizing a song you haven't recorded before by searching Genius for its lyrics."""
+"""Recognizing a song you haven't recorded before by searching Genius for its lyrics, and reading a song's lyrics
+as Genius writes them (lyrics()), to show while singing along (along.py).
+
+Genius's API finds songs but doesn't give their lyrics: those are read from the song's page on genius.com, where
+they're the text of the elements marked `data-lyrics-container`, a line ending at each <br>, around a header and
+ads marked `data-exclude-from-selection`.
+"""
 
 import json
 import re
@@ -6,12 +12,15 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, replace
+from html.parser import HTMLParser
 
 from woodshed.lyrics import words
 
 API = "https://api.genius.com/search"
 SONGS = "https://api.genius.com/songs"
+PAGE = "https://genius.com/songs"  # /<id> leads to the song's page
 MAX_QUERIES = 5
+_VOID = frozenset("area base br col embed hr img input link meta source track wbr".split())  # tags that aren't closed
 
 _VERSION_TAG = re.compile(
     r"\s*[(\[][^)\]]*\b(remaster\w*|live|version|edit|mix|acoustic|demo|mono|stereo)\b[^)\]]*[)\]]", re.I)
@@ -57,6 +66,60 @@ def _get(url: str, token: str) -> dict:
         raise GeniusError(f"Genius search failed (HTTP {e.code})") from None
     except (urllib.error.URLError, TimeoutError) as e:
         raise GeniusError(f"Couldn't reach Genius ({getattr(e, 'reason', e)})") from None
+
+
+def lyrics(genius_id: int) -> tuple[str, list[str]]:
+    """A song's page on genius.com and its lyrics, line by line, without the headings ("[Chorus]"). Raises
+    GeniusError if the page can't be got; the lines are empty if it has no lyrics (an instrumental, or a page
+    written another way)."""
+    request = urllib.request.Request(f"{PAGE}/{int(genius_id)}", headers={"User-Agent": "woodshed"})
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            url, html = response.url, response.read(8 << 20).decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        raise GeniusError(f"Genius didn't give the lyrics (HTTP {e.code})") from None
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        raise GeniusError(f"Couldn't reach Genius ({getattr(e, 'reason', e)})") from None
+    return url, lyrics_in(html)
+
+
+def lyrics_in(html: str) -> list[str]:
+    """The lyrics in a song's page, as lyrics() gives them."""
+    page = _Page()
+    page.feed(html)
+    page.close()
+    lines = (" ".join(line.replace("\u200b", "").split()) for line in "".join(page.text).split("\n"))
+    return [line for line in lines if line and not re.fullmatch(r"\[[^\]]*\]", line)]
+
+
+class _Page(HTMLParser):
+    """Gathers the text of a page's lyrics."""
+
+    def __init__(self):
+        super().__init__()
+        self.text: list[str] = []
+        self._open: list[str] = []  # each element we're in: "lyrics", "left out" (and all in it), or ""
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "br":
+            if self._reading():
+                self.text.append("\n")
+        if tag in _VOID:
+            return
+        names = {name for name, _ in attrs}
+        self._open.append("left out" if "data-exclude-from-selection" in names
+                          else "lyrics" if "data-lyrics-container" in names else "")
+
+    def handle_endtag(self, tag):
+        if tag not in _VOID and self._open and self._open.pop() == "lyrics":
+            self.text.append("\n")  # a line doesn't run on into the next container
+
+    def handle_data(self, data):
+        if self._reading():
+            self.text.append(data)
+
+    def _reading(self) -> bool:
+        return "lyrics" in self._open and "left out" not in self._open
 
 
 def snippets(lines: list[str], limit: int = MAX_QUERIES) -> list[str]:

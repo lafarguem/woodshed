@@ -385,6 +385,76 @@ def tune(
         raise typer.Exit(1)
 
 
+def _write_lyrics(songs: Library, song: str, token: str | None) -> None:
+    """Gets the song's lyrics from Genius, to show while singing along instead of the words heard in its
+    reference recording, and times them in it (along.written()). Only for a song Genius recognized a take of."""
+    from woodshed import along
+
+    reference, genius_id = songs.reference(song), songs.genius_id(song)
+    if genius_id is None or reference is None or reference.melody is None:
+        return
+    try:
+        if token:  # a take may have been recognized as someone's cover of it, written their way
+            genius_id = genius.original(genius.Candidate(song, "", genius_id), token).genius_id
+        with console.status(f"Getting the lyrics of “{escape(song)}” from Genius…"):
+            url, text = genius.lyrics(genius_id)
+    except genius.GeniusError as e:
+        console.print(f"[dim]{escape(str(e))}: singing along to “{escape(song)}” shows the words heard in the "
+                      "recording.[/dim]")
+        return
+    lines = _time_lyrics(songs, song, {"from": url, "text": text})
+    if lines:
+        console.print(f"[green]✓[/green] Singing along to “{escape(song)}” shows its lyrics from Genius "
+                      f"({len(lines)} lines).")
+    else:
+        console.print(f"[dim]The lyrics Genius has for “{escape(song)}” {'aren’t' if text else 'are none of'} what's "
+                      "sung in the recording: singing along shows the words heard in it.[/dim]")
+
+
+def _time_lyrics(songs: Library, song: str, lyrics: dict | None = None) -> list[dict]:
+    """Times the song's written lyrics (`lyrics`, just fetched, or else those kept) in its reference recording, by
+    the words heard in it and those its tab writes under its notes, and keeps them. To do again when its tab
+    changes. The lines timed: none if there are no lyrics, or they aren't what's sung."""
+    from woodshed import along
+
+    reference = songs.reference(song)
+    lyrics = lyrics or reference.lyrics
+    if not lyrics or "text" not in lyrics:
+        return []
+    lines = along.written(lyrics["text"], reference.melody, (reference.tab or {}).get("words")) or []
+    songs.set_lyrics(song, {"from": lyrics["from"], "text": lyrics["text"], "lines": lines})
+    return lines
+
+
+def _refresh_tabs(songs: Library) -> None:
+    """Gets again the tabs from Songsterr that were kept before Woodshed read the words under their notes."""
+    from woodshed import along, songsterr
+    from woodshed import tab as tabs
+
+    for song in _sung_along(songs):
+        reference = songs.reference(song)
+        kept = reference.tab or {}
+        song_id = songsterr.song_id(str(kept.get("file", "")))
+        if song_id is None or "words" in kept:
+            continue
+        try:
+            with console.status(f"Getting the words of Songsterr's tab of “{escape(song)}”…"):
+                tab = songsterr.fetch(song_id)
+                found = tabs.timed(songsterr.score(songsterr.download(tab)))
+                named = kept.get("track") if any(t.name == kept.get("track") for t in found) else None
+                placed = tabs.place(found, reference.contour, along.CONTOUR_HOP, named)
+        except tabs.TabError as e:
+            console.print(f"[dim]Couldn't get the words of Songsterr's tab of “{escape(song)}” ({escape(str(e))}): "
+                          "its lyrics stay timed by the words heard.[/dim]")
+            continue
+        if placed is None:  # the tab has changed, and no longer fits: the one kept stays, as it is
+            songs.set_tab(song, {**kept, "words": []})
+            continue
+        _keep_tab(songs, song, placed, kept["file"], "")
+        console.print(f"[green]✓[/green] The lyrics of “{escape(song)}” go by the words under the notes of "
+                      f"Songsterr's tab ({len(placed.words or [])} words).")
+
+
 def _sung_along(songs: Library) -> list[str]:
     """The songs whose reference keeps what singing along takes."""
     return [s for s in songs.songs() if songs.has_reference(s) and (r := songs.reference(s)) and r.sung_along]
@@ -396,7 +466,8 @@ def _to_sing_along(songs: Library, song: str) -> "along.Song":
 
     reference = songs.reference(song)
     sung = [t.melody for t in songs.takes_of(song, melody=True) if t.melody]
-    return along.Song(song, along.lines(reference.melody), reference.contour,
+    written = (reference.lyrics or {}).get("lines")
+    return along.Song(song, written or along.lines(reference.melody), reference.contour,
                       along.octaves(reference.contour, along.register(sung[-RECENT_REGISTER:])),
                       reference.band, reference.voice, reference.tab["notes"] if reference.tab else None)
 
@@ -669,6 +740,9 @@ def reference(
             console.print(f"“{escape(song)}” is rated against the melody of {escape(str(current))} "
                           f"(set {current.added:%Y-%m-%d}).")
             _reference(songs, song)  # says so if it needs setting again
+            if current.lyrics and current.lyrics.get("lines"):
+                console.print(f"[dim]Singing along shows its lyrics from {escape(current.lyrics['from'])}[/dim]",
+                              soft_wrap=True)
             return
         console.print(f"“{escape(song)}” has no reference recording, so it's rated against its scale.")
         if not youtube.available():
@@ -710,6 +784,7 @@ def reference(
     if older:
         console.print(f"{older} of its takes {'was' if older == 1 else 'were'} filed before Woodshed kept their "
                       "melody: `shed progress` analyzes them the first time (it takes a while).")
+    _write_lyrics(songs, song, settings.genius_token)
     console.print(f"See how your takes compare: shed progress {escape(shlex.quote(song))}")
     if tab or songsterr:
         _set_tab(songs, song, "songsterr" if songsterr else tab.expanduser(), track)
@@ -726,6 +801,7 @@ def _set_tab(songs: Library, song: str, file: Path | Literal["songsterr"] | None
     if file is None:
         if current and current.tab:
             songs.set_tab(song, None)
+            _time_lyrics(songs, song)
             console.print(f"Singing along to “{escape(song)}” goes by the melody heard in its recording again.")
         else:
             console.print(f"“{escape(song)}” has no tab.")
@@ -759,7 +835,9 @@ def _not_the_melody(tab: str, song: str, track: str | None = None) -> str:
 def _keep_tab(songs: Library, song: str, placed, source: str, shown: str) -> str:
     """Keeps a tab laid over the song's recording (tab.Placed), from `source` (a file, a link): what to say."""
     songs.set_tab(song, {"file": source, "track": placed.track.name, "notes": [list(n) for n in placed.notes],
-                         "share": round(placed.share, 3), "key": placed.key})
+                         "share": round(placed.share, 3), "key": placed.key,
+                         "words": placed.words or []})
+    _time_lyrics(songs, song)  # by the words under the tab's notes, if it writes them
     key = "" if not placed.key else (f", written {abs(placed.key)} semitone{'' if abs(placed.key) == 1 else 's'} "
                                      f"{'under' if placed.key > 0 else 'over'} the recording (a capo?)")
     close = "" if not placed.close else (f" “{placed.close}” fit nearly as well: --track picks a track by its name "
@@ -776,28 +854,45 @@ def _tab_from_songsterr(songs: Library, song: str, contour: list, track: str | N
     from woodshed import along, songsterr
     from woodshed import tab as tabs
 
+    def lay(tab) -> tuple[str | None, str]:
+        """Downloads a tab (songsterr.Song) and lays it over the recording: what to say if it was kept (else
+        None), and why not. Raises TabError."""
+        shown = f"Songsterr's tab of “{tab.title}”" + (f" by {tab.artist}" if tab.artist else "")
+        console.print(f"Got {escape(shown)}.")
+        with console.status("Downloading its tracks from Songsterr…"):
+            found = songsterr.download(tab)
+        with console.status("Finding the melody in the tab…"):
+            placed = tabs.place(tabs.timed(songsterr.score(found)), contour, along.CONTOUR_HOP, track)
+        if placed is None:
+            return None, _not_the_melody(shown, song, track)
+        return _keep_tab(songs, song, placed, tab.url or f"songsterr:{tab.id}", shown), ""
+
     def received(sent) -> tuple[bool, str]:
         try:
-            tab = songsterr.song(sent)
-            shown = f"Songsterr's tab of “{tab.title}”" + (f" by {tab.artist}" if tab.artist else "")
-            console.print(f"Got {escape(shown)}.")
-            with console.status("Downloading its tracks from Songsterr…"):
-                found = songsterr.download(tab)
-            with console.status("Finding the melody in the tab…"):
-                placed = tabs.place(tabs.timed(songsterr.score(found)), contour, along.CONTOUR_HOP, track)
+            said, message = lay(songsterr.song(sent))
         except tabs.TabError as e:
-            message = f"Can't read it: {e}."
-        else:
-            if placed is not None:
-                said = _keep_tab(songs, song, placed, tab.url or f"songsterr:{tab.id}", shown)
-                console.print(f"[green]✓[/green] {escape(said)}")
-                return True, f"✓ {said}"
-            message = _not_the_melody(shown, song, track)
+            said, message = None, f"Can't read it: {e}."
+        if said:
+            console.print(f"[green]✓[/green] {escape(said)}")
+            return True, f"✓ {said}"
         console.print(f"[red]{escape(message)}[/red] Waiting for another tab (Ctrl+C stops).")
         return False, f"{message} Try another tab of it."
 
     artist = next((t.artist for t in reversed(songs.takes_of(song)) if t.artist), None)
     query = f"{artist} {song}" if artist else song
+    # Songsterr is asked first; the bookmark is for when it doesn't answer, or has the song under another name.
+    try:
+        with console.status(f"Looking for “{escape(song)}” on Songsterr…"):
+            ids = songsterr.find(song, artist)
+        why = f"Songsterr has no tab called “{song}”" if not ids else ""
+        for song_id in ids:
+            said, why = lay(songsterr.fetch(song_id))
+            if said:
+                console.print(f"[green]✓[/green] {escape(said)}")
+                return
+    except tabs.TabError as e:
+        why = str(e)[:1].upper() + str(e)[1:]
+    console.print(f"[yellow]{escape(why.rstrip('.'))}.[/yellow] Pick the tab yourself:")
     try:
         server = songsterr.Waiting(songsterr.PORT, songsterr.page(song, query), received)
     except OSError as e:
@@ -952,6 +1047,10 @@ def serve(
     filer = None if later else _PhoneFiler(songs, settings, session, language)
     from woodshed import along
 
+    for song in _sung_along(songs):  # references set before their lyrics were looked for
+        if "text" not in (songs.reference(song).lyrics or {}):  # none yet, or kept before their text was
+            _write_lyrics(songs, song, settings.genius_token)
+    _refresh_tabs(songs)
     sing = along.Session(lambda title: _to_sing_along(songs, title), _sung_along(songs),
                          started=lambda title: console.print(f"[green]♪[/green] {datetime.now():%H:%M} Singing along "
                                                              f"to {escape(title)} from your phone"))
@@ -1000,6 +1099,7 @@ def serve(
     except KeyboardInterrupt:
         pass
     finally:
+        server.close_pages()  # the page on the phone closes, or says this stopped
         server.server_close()
         session.stop()  # a question left unanswered: the take waits to be filed
         if filer:

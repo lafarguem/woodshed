@@ -94,3 +94,19 @@ def test_the_song_found_first_stays_if_genius_cant_say_what_its_a_cover_of(monke
     monkeypatch.setattr(genius, "song", unreachable)
     ranked = genius.identify(found_first(monkeypatch, hit("Harbor Lights", "Some Cover Singer", 2)), "token")
     assert (ranked[0].artist, ranked[0].genius_id) == ("Some Cover Singer", 2)
+
+
+PAGE = """<html><body><div id="lyrics-root">
+<div data-lyrics-container="true" class="a"><div data-exclude-from-selection="true"><button>12 Contributors</button>
+<h2>Harbor Lights Lyrics</h2><p>A song about a harbor.<br>Read more</p></div>[Verse 1]<br/>
+<a href="/1/note"><span>The harbor lights are low<br>And I&#x27;m</span></a> going <i>home</i><br><br>[Chorus: Bea &amp; Al]<br>
+Oh, the tide (The tide)</div>
+<div data-exclude-from-selection="true"><div id="ad"><img src="x.png">You might also like</div></div>
+<div data-lyrics-container="true" class="a">Carry me​<br>[Outro]</div>
+</div><footer>About Genius<br>Sign up</footer></body></html>"""
+
+
+def test_a_songs_lyrics_are_read_from_its_page_without_its_headings():
+    assert genius.lyrics_in(PAGE) == ["The harbor lights are low", "And I'm going home", "Oh, the tide (The tide)",
+                                      "Carry me"]
+    assert genius.lyrics_in("<html><body><p>Lyrics for this song have yet to be released.</p></body></html>") == []

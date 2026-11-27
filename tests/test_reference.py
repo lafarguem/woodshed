@@ -454,3 +454,31 @@ def test_the_recording_is_kept_to_sing_along_to_and_goes_with_the_reference(harb
 def test_a_reference_set_before_recordings_were_kept_cant_be_sung_along_to(harbor):
     harbor.library.set_reference("Harbor Lights", sing(), "original.mp3")
     assert not harbor.library.reference("Harbor Lights").sung_along
+
+
+def test_singing_along_shows_the_lyrics_genius_has_of_a_recognized_song(harbor, tone):
+    from woodshed import along
+
+    misheard = sing(hear=lambda w: {"harbor": "arbor"}.get(w, w))
+    result = set_reference(harbor, misheard)  # Genius never recognized a take of it: the words heard
+    assert "Genius" not in text(result) and harbor.library.reference("Harbor Lights").lyrics is None
+    assert cli._to_sing_along(harbor.library, "Harbor Lights").lines == along.lines(misheard)
+
+    add_take(harbor.library, tone, "Harbor Lights", 8, 13, datetime(2026, 6, 2, 20, 0), LINES, genius_id=7)
+    result = set_reference(harbor, misheard)  # Genius can't be reached: still the words heard, and asked again later
+    assert "Couldn't reach Genius" in text(result) and harbor.library.reference("Harbor Lights").lyrics is None
+
+    harbor.lyrics[7] = ("https://genius.com/harbor-lights-lyrics", [line.upper() + "!" for line in LINES])
+    result = set_reference(harbor, misheard)
+    assert f"shows its lyrics from Genius ({len(LINES)} lines)" in text(result)
+    shown = cli._to_sing_along(harbor.library, "Harbor Lights").lines
+    assert [line["text"] for line in shown] == [line.upper() + "!" for line in LINES]
+    assert [line["start"] for line in shown] == [line["start"] for line in along.lines(sing())]
+    assert "its lyrics from https://genius.com/harbor-lights-lyrics" in text(harbor("reference", "harbor"))
+
+    harbor.lyrics[7] = ("https://genius.com/winter-town-lyrics", ["Down the winter town we go"] * 8)
+    result = set_reference(harbor, misheard)  # another song's: the words heard, and not asked for again
+    assert "aren’t what's sung in the recording" in text(result)
+    assert harbor.library.reference("Harbor Lights").lyrics == {
+        "from": "https://genius.com/winter-town-lyrics", "text": ["Down the winter town we go"] * 8, "lines": []}
+    assert cli._to_sing_along(harbor.library, "Harbor Lights").lines == along.lines(misheard)

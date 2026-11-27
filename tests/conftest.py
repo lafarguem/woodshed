@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 from typer.testing import CliRunner
 
-from woodshed import cli, config, genius, isolate, melody, rating, transcribe, widgets, youtube
+from woodshed import cli, config, genius, isolate, melody, rating, songsterr, transcribe, widgets, youtube
 from woodshed.library import Library
 from woodshed.lyrics import words
 from woodshed.rating import Metrics
@@ -181,6 +181,19 @@ def shed(tmp_path, monkeypatch):
     monkeypatch.setattr(rating, "analyze", lambda stems, track=None: shed.metrics)
     monkeypatch.setattr(melody, "extract", lambda stems, lines, track: shed.melody)
     monkeypatch.setattr(youtube, "available", lambda: False)  # whether or not yt-dlp is installed here
+    shed.lyrics = {}  # what Genius has written of each song, by its id there: {id: (its page, the lines)}
+
+    def lyrics(genius_id):
+        if genius_id not in shed.lyrics:
+            raise genius.GeniusError("Couldn't reach Genius (offline)")
+        return shed.lyrics[genius_id]
+
+    monkeypatch.setattr(genius, "lyrics", lyrics)
+
+    def unreachable(*asked, **how):
+        raise songsterr.TabError("Songsterr couldn't be reached (offline)")
+
+    monkeypatch.setattr(songsterr, "_ask", unreachable)  # its API; a test says what it answers
 
     def sings(samples):  # hears singing in a low tone: 1 s of 16 kHz samples makes bin n n Hz
         shed.checked.append(1)

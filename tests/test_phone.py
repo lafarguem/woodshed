@@ -133,6 +133,9 @@ class FakeServer:
     def serve_forever(self):
         raise KeyboardInterrupt
 
+    def close_pages(self):
+        self.songs.pages_closed = True
+
     def server_close(self):
         pass
 
@@ -380,7 +383,7 @@ def singing(tmp_path, monkeypatch):
                                                      tmp_path / "band.mp3", tmp_path / "voice.mp3"), ["Harbor Lights"])
     running = phone.Server(songs, secret, cert, key, 0, lambda *take: None, sing=session)
     threading.Thread(target=running.serve_forever, daemon=True).start()
-    yield SimpleNamespace(port=running.server_address[1], secret=secret)
+    yield SimpleNamespace(port=running.server_address[1], secret=secret, running=running)
     running.shutdown()
     running.server_close()
 
@@ -485,3 +488,18 @@ def test_the_page_tunes_a_guitar(server):
     assert tune_request(server, f"rate={rate}&tuning=Standard&string=6", plucked)[0] == 400
     assert tune_request(server, f"rate={rate}&tuning=Standard&string=low", plucked)[0] == 400
     assert tune_request(server, f"rate={rate}&tuning=Standard", plucked[:-1])[0] == 400  # not 16-bit samples
+
+
+def test_a_page_is_told_when_shed_serve_stops(singing):
+    assert sing_request(singing, "/open", key="guess")[0] == 403
+    singing.running.open_seconds = 0.05
+    assert sing_request(singing, "/open") == (200, {"closed": False})  # still running: it asks again
+    singing.running.open_seconds = 30
+    answers = []
+    asking = threading.Thread(target=lambda: answers.append(sing_request(singing, "/open")))
+    asking.start()
+    while not singing.running._asking:
+        time.sleep(0.01)
+    singing.running.close_pages()  # as Ctrl+C does
+    asking.join(5)
+    assert answers == [(200, {"closed": True})]

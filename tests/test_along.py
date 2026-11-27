@@ -104,3 +104,66 @@ def test_a_session_gives_the_page_a_song_and_reads_what_it_hears(voice, tmp_path
     assert session.hear(hum(0.3))[0] == [0.0, 0.0, 0.9]  # from the start: getting ready isn't counted
     session.stop()
     assert session.hear(hum(0.3)) is None
+
+
+def written_like(hear):
+    """LINES as written, timed in a recording where Whisper heard each word as `hear` says."""
+    return along.written(LINES, sing(hear=hear))
+
+
+def test_written_lyrics_take_the_times_their_words_were_heard_at():
+    misheard = {"harbor": "arbor", "lights": "light"}
+    lines = written_like(lambda w: misheard.get(w, w))
+    assert [line["text"] for line in lines] == LINES  # as written, not as heard
+    heard = along.lines(sing())
+    assert [[w[1:] for w in line["words"]] for line in lines] == [[w[1:] for w in line["words"]] for line in heard]
+    assert [(line["start"], line["end"]) for line in lines] == [(line["start"], line["end"]) for line in heard]
+
+
+def test_a_written_word_nobody_heard_is_put_next_to_those_heard():
+    whole = along.lines(sing())
+    first, last = whole[0]["words"][0][0], whole[1]["words"][-1][0]
+    count = {}
+
+    def hear(word):  # the first line's first word and the second line's last aren't heard
+        count[word] = count.get(word, 0) + 1
+        return None if (word == first and count[word] == 1) or (word == last and count[word] == 1) else word
+
+    lines = written_like(hear)
+    assert [line["text"] for line in lines] == LINES
+    start, then = lines[0]["words"][:2]
+    assert start[0] == first and start[2] == then[1] and 0 < then[1] - start[1] <= 0.41  # right before the next
+    before, end = lines[1]["words"][-2:]
+    assert end[0] == last and end[1] == before[2] and end[2] <= lines[2]["start"]  # right after the one before
+    for a, b in zip(lines, lines[1:]):
+        assert a["end"] <= b["start"]
+
+
+def test_a_written_line_nobody_heard_a_word_of_is_kept_only_where_theres_time_to_sing_it():
+    line_of = [n for n, line in enumerate(LINES) for _ in along.lines(sing())[n]["words"]]
+    at = iter(line_of)
+    lines = written_like(lambda w: None if next(at) == 2 else w)  # the third line, between two heard: 4 s for it
+    assert [line["text"] for line in lines] == LINES
+    assert lines[1]["end"] <= lines[2]["start"] < lines[2]["end"] <= lines[3]["start"]
+    at = iter(line_of)
+    lines = written_like(lambda w: None if next(at) == 0 else w)  # the first: nothing says when it starts
+    assert [line["text"] for line in lines] == LINES[1:]
+
+
+def test_lyrics_of_another_song_arent_timed():
+    assert along.written(["Down the winter town we go", "Nobody knows the road we chose", "The harbor is far"] * 4,
+                         sing()) is None
+    assert along.written([], sing()) is None
+
+
+def test_a_written_line_misheard_all_through_is_shown_when_the_words_heard_in_its_place_were_sung():
+    line_of = [n for n, line in enumerate(LINES) for _ in along.lines(sing())[n]["words"]]
+    at = iter(line_of)
+    misheard = sing(hear=lambda w: "yerps" if next(at) == 2 else w)
+    lines = along.written(LINES, misheard)
+    assert [line["text"] for line in lines] == LINES
+    heard = along.lines(misheard)[2]
+    assert (lines[2]["start"], lines[2]["end"]) == (heard["start"], heard["end"])
+    # …but not a long line on a word or two heard
+    wordy = LINES[:2] + [" ".join(["woah"] * 3 * len(heard["words"]))] + LINES[3:]
+    assert [line["text"] for line in along.written(wordy, misheard)] == wordy[:2] + wordy[3:]

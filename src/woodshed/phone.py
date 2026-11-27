@@ -25,6 +25,7 @@ import socketserver
 import ssl
 import subprocess
 import threading
+import time
 from collections.abc import Callable
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -184,6 +185,27 @@ class Server(ThreadingHTTPServer):
         self.session, self.filing = session or Session(), filing  # filing: they're filed here as they come
         self.sing = sing
         self._naming = threading.Lock()
+        self.open_seconds = 25.0  # how long a page's question whether this still runs is left unanswered (/open)
+        self._closing, self._asking, self._count = threading.Event(), 0, threading.Lock()
+
+    def closed(self) -> bool:
+        """Waits for close_pages(), up to open_seconds: whether it was called. A page keeps asking (/open), so
+        it's told as soon as `shed serve` stops, without asking every second."""
+        with self._count:
+            self._asking += 1
+        try:
+            return self._closing.wait(self.open_seconds)
+        finally:
+            with self._count:
+                self._asking -= 1
+
+    def close_pages(self, seconds: float = 1.0) -> None:
+        """Tells the pages that are open that this is stopping, and gives the answers that long to leave."""
+        self._closing.set()
+        until = time.monotonic() + seconds
+        while self._asking and time.monotonic() < until:
+            time.sleep(0.02)
+        time.sleep(0.05)  # the last answer, written after it's counted out
 
     def server_bind(self) -> None:
         # HTTPServer's own also looks this Mac's name up on the network (socket.getfqdn), which nothing here needs,
@@ -275,6 +297,10 @@ class _Handler(BaseHTTPRequestHandler):
             if not self._allowed(self.headers.get(_KEY_HEADER)):
                 return self._json(403, error="this isn't the link `shed serve` shows")
             return self._sing_get(url.path, parse_qs(url.query))
+        if url.path == "/open":
+            if not self._allowed(self.headers.get(_KEY_HEADER)):
+                return self._json(403, error="this isn't the link `shed serve` shows")
+            return self._json(200, closed=self.server.closed())
         if url.path == "/tune":
             if not self._allowed(self.headers.get(_KEY_HEADER)):
                 return self._json(403, error="this isn't the link `shed serve` shows")

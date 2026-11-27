@@ -12,6 +12,14 @@ then found, when it closes itself, or why the tab doesn't fit.
 - Bars are laid out by the track with the most: time signatures, repeats (`repeatStart`, and `repeat`, the times the
   section is played, on its last bar), alternate endings (the times through it's played on), and tempo changes.
 - Drum tracks aren't downloaded: they have no melody.
+- A voice's track has the words sung on it (`newLyrics`): a text, its syllables set apart by spaces and hyphens
+  ("bo-ring a-way"), from the bar it starts at (`offset`, counted from 1). It doesn't say which note each is sung
+  on: they go one a note, in order, rests and notes tied to the one before passed over (_syllables()). On a tab
+  of 299 such notes, the text had 298 syllables; on another, 166 for 137 notes: more of its last line written
+  than is sung, which falls off the end. Only the first text is read (others would be other verses, on a repeat).
+- Songsterr's API answers anyone where a song's tab is kept (/api/meta/<song>), and which songs match a search
+  (/api/songs): `shed reference --songsterr` asks it (find(), fetch()), and falls back on the bookmark if it
+  doesn't answer, as its pages don't to anything but a browser.
 
 As in songsterr-downloader (github.com/Metaphysics0/songsterr-downloader, MIT), whose bookmarklet this one follows.
 """
@@ -28,12 +36,13 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, urlencode, urlsplit
 
 from woodshed.tab import Score, TabError, played
 
 PORT = 8766  # the bookmark opens the page there, so it can't change
 CDNS = ("https://dqsljvtekg760.cloudfront.net", "https://d3d3l6a6rcgkaf.cloudfront.net")
+API = "https://www.songsterr.com/api"
 DRUMS = 1024  # Songsterr's instrument id for a drum kit
 MAX_TRACKS = 100
 _IMAGE = re.compile(r"(?=.{1,100}$)[\w-]+(\.[\w-]+)*")  # goes into the CDN's paths: no "/" nor ".."
@@ -93,6 +102,51 @@ def song(sent) -> Song:
                 url if url.startswith("https://www.songsterr.com/") else None, tracks)
 
 
+def _ask(path: str, timeout: float = 15):
+    """What Songsterr's API answers. Raises TabError."""
+    request = urllib.request.Request(f"{API}/{path}", headers={"User-Agent": "woodshed", "Accept-Encoding": "gzip"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            body = response.read(8 << 20)
+            if response.headers.get("Content-Encoding") == "gzip":
+                body = gzip.decompress(body)
+        return json.loads(body)
+    except urllib.error.HTTPError as e:
+        raise TabError(f"Songsterr didn't answer (HTTP {e.code})") from None
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
+        raise TabError(f"Songsterr couldn't be reached ({getattr(e, 'reason', e)})") from None
+
+
+def find(title: str, artist: str | None = None, limit: int = 3) -> list[int]:
+    """The songs Songsterr has tabs of under this very title, as it ranks them, this artist's first: the song
+    itself, and other tabs of it (as written for another instrument, say, which have no voice). Raises TabError."""
+    from woodshed.lyrics import words
+
+    hits = _ask(f"songs?{urlencode({'pattern': f'{artist} {title}' if artist else title, 'size': 20})}")
+    wanted, by = words(title), words(artist or "")
+    same = [hit for hit in hits if isinstance(hit, dict) and isinstance(hit.get("songId"), int)
+            and words(str(hit.get("title", ""))) == wanted] if isinstance(hits, list) else []
+    same.sort(key=lambda hit: words(str(hit.get("artist", ""))) != by)  # a stable sort: Songsterr's order otherwise
+    return [hit["songId"] for hit in same[:limit]]
+
+
+def fetch(song_id: int) -> Song:
+    """Where Songsterr keeps a song's tab, as the bookmark would send it. Raises TabError."""
+    meta = _ask(f"meta/{int(song_id)}")
+    if not isinstance(meta, dict) or not isinstance(meta.get("tracks"), list):
+        raise TabError("what Songsterr answered isn't a tab")
+    slug = "-".join(re.findall(r"[a-z0-9]+", f"{meta.get('artist', '')} {meta.get('title', '')}".lower()))
+    return song({**meta, "url": f"https://www.songsterr.com/a/wsa/{slug}-tab-s{int(song_id)}",
+                 "tracks": [{**track, "partId": track.get("partId", part)} if isinstance(track, dict) else track
+                            for part, track in enumerate(meta["tracks"])]})
+
+
+def song_id(url: str) -> int | None:
+    """The song a tab's page on songsterr.com is of (as Song.url)."""
+    found = re.search(r"^https://www\.songsterr\.com/.*-s(\d+)$", url)
+    return int(found.group(1)) if found else None
+
+
 def download(tab: Song, timeout: float = 15) -> list[tuple[Track, dict]]:
     """The tab's tracks (but its drums), each as Songsterr writes it. Raises TabError if none could be got."""
     wanted = sorted((t for t in tab.tracks if not t.drums), key=lambda t: t.part)
@@ -150,7 +204,7 @@ def _score(found: list[tuple[Track, dict]]) -> Score:
                        frozenset(n for n in endings if isinstance(n, int) and n > 0)))
     tempos = [(int(t["measure"]), min(1.0, max(0.0, t.get("position", 0) / (t.get("type") or 4))), float(t["bpm"]))
               for t in (master.get("automations") or {}).get("tempo") or [] if t.get("bpm", 0) > 0]
-    parts = []
+    parts, sung = [], []
     for track, payload in found:
         tuning = payload.get("tuning") if isinstance(payload.get("tuning"), list) else track.tuning
         bars = []
@@ -172,7 +226,22 @@ def _score(found: list[tuple[Track, dict]]) -> Score:
                 beats.append((length, pitch, tied))
             bars.append(beats)
         parts.append((payload.get("name") or track.name or f"Track {track.part + 1}", bars))
-    return Score(lengths, tempos, played(layout), parts)
+        sung.append(_syllables(payload.get("newLyrics"), bars))
+    return Score(lengths, tempos, played(layout), parts, sung if any(sung) else None)
+
+
+def _syllables(lyrics, bars: list[list[tuple]]) -> list[list[str | None]] | None:
+    """The syllables of a track's words, each on its beat (as tab.Score.sung): one a note, in order, from the bar
+    the text starts at, passing over rests and notes tied to the one before. None if no words are written."""
+    text = next((line for line in lyrics if isinstance(line, dict) and isinstance(line.get("text"), str)
+                 and line["text"].strip()), None) if isinstance(lyrics, list) else None
+    if text is None:
+        return None
+    # "a-way" is two syllables, "a+lot" two words on one note; a hyphen alone holds the syllable before.
+    syllables = iter(s.replace("+", " ") for s in re.findall(r"[^\s-]+-?", text["text"]))
+    first = text["offset"] - 1 if isinstance(text.get("offset"), int) and text["offset"] >= 1 else 0
+    return [[next(syllables, None) if number >= first and pitch is not None and not tied else None
+             for _, pitch, tied in beats] for number, beats in enumerate(bars)]
 
 
 def search(query: str) -> str:

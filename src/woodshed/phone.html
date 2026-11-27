@@ -704,6 +704,13 @@ async function sendSung(context) {
   }
 }
 
+// The melody is drawn in every octave, each in a colour of its own: blue where its singer sings it, then violet and
+// purple going up, teal going down (and round again, four octaves on). So when the melody leaps an octave, the
+// colours change rows, in whichever octave you follow it; all one colour, the picture would look the same. They keep
+// clear of the green, yellow and red of what you sing. The singer's own octave is the strongest, and its blocks outlined; the others are washed out. `over`: lighter, for the thin line drawn over a tab's notes.
+const OCTAVE_HUES = [215, 258, 300, 172];
+const octaveColor = (octave, over) => `hsl(${OCTAVE_HUES[((octave % 4) + 4) % 4]}, ${octave ? 50 : 75}%, ${over ? 72 : octave ? 62 : 55}%)`;
+
 // A block of the picture, its corners rounded where the browser can.
 function block(ink, left, top, width, height, radius) {
   if (!ink.roundRect) { ink.fillRect(left, top, width, height); return; }
@@ -757,8 +764,8 @@ function drawSung() {
       ink.fillText(`${name}${Math.floor((note + 69) / 12) - 1}`, 4, y(note));
     }
   }
-  // The melody: each stretch sung without a break, as a band half a semitone thick, in every octave in the picture. The
-  // octave its singer sings it in stands out; the others are fainter.
+  // The melody: each stretch sung without a break, as a band half a semitone thick, in every octave in the picture,
+  // each octave in its colour (octaveColor()). The octave its singer sings it in stands out; the others are fainter.
   // With a tab, its notes are the melody: each a block filling its row for as long as it's written. What the
   // singer sings is then a thin faint line over them, to see how they go about the notes.
   const { hop, pitch } = song.contour;
@@ -767,9 +774,18 @@ function drawSung() {
     for (let octave = -5; octave <= 5; octave++) {
       const at = written + 12 * octave;
       if (at < low - 1 || at > high + 1) continue;
-      ink.globalAlpha = octave ? 0.38 : 0.55;
-      ink.fillStyle = octave ? color("--dim") : "#5b8fd9";
-      block(ink, x(start), y(at + 0.5) + 1, Math.max(x(end) - x(start) - 1, 2), step - 2, 4);
+      // The singer's own octave is outlined, the others washed out: neither is solid, as your notes are.
+      const from = x(start), wide = Math.max(x(end) - x(start) - 1, 2);
+      ink.globalAlpha = octave ? 0.3 : 0.45;
+      ink.fillStyle = ink.strokeStyle = octaveColor(octave);
+      block(ink, from, y(at + 0.5) + 1, wide, step - 2, 4);
+      if (!octave && ink.roundRect) {
+        ink.globalAlpha = 0.95;
+        ink.lineWidth = 1.5;
+        ink.beginPath();
+        ink.roundRect(from + 0.75, y(at + 0.5) + 1.75, Math.max(wide - 1.5, 1), step - 3.5, 3.5);
+        ink.stroke();
+      }
     }
   }
   const from = Math.max(0, Math.floor((now - NOW_AT * SPAN) / hop) - 1);
@@ -777,8 +793,8 @@ function drawSung() {
   ink.lineWidth = song.notes ? 1.5 : Math.max(5, step * 0.5);
   ink.lineCap = ink.lineJoin = "round";
   for (let octave = -5; octave <= 5; octave++) {
-    ink.globalAlpha = song.notes ? (octave ? 0.3 : 0.45) : octave ? 0.3 : 0.6;
-    ink.strokeStyle = octave ? color("--dim") : song.notes ? "#8fb3e6" : "#5b8fd9";
+    ink.globalAlpha = song.notes ? (octave ? 0.3 : 0.7) : octave ? 0.3 : 0.6;
+    ink.strokeStyle = octaveColor(octave, Boolean(song.notes));
     let drawing = false;
     ink.beginPath();
     for (let i = from; i <= to; i++) {
@@ -854,7 +870,8 @@ function showTuning(voice) {
   needle.style.background = Math.abs(cents) <= TUNED ? "var(--ok)" : Math.abs(cents) <= 2 * TUNED ? "#b7950b" : "var(--accent)";
 }
 
-// The line being sung, the words sung so far set apart from those to come; under it, the next one.
+// The line being sung, the words sung so far set apart from those to come; under it, the next one. A word a tab
+// writes over several notes comes syllable by syllable: its fourth entry is [[letters sung so far, since when]…].
 function showSungLine(now) {
   const lines = singing.song.lines;
   let current = -1;
@@ -862,14 +879,22 @@ function showSungLine(now) {
   if (current >= 0 && now > lines[current].end + 2 && current + 1 < lines.length) current += 0.5;  // between two lines
   const line = Number.isInteger(current) && current >= 0 ? lines[current] : null;
   const words = line ? line.words.filter((word) => word[1] <= now).length : 0;
-  const shown = `${current}:${words}`;
+  const parts = words ? line.words[words - 1][3] : null;
+  const letters = parts ? Math.max(0, ...parts.filter((part) => part[1] <= now).map((part) => part[0])) : 0;
+  const shown = `${current}:${words}:${letters}`;
   if (shown === singing.shownLine) return;
   singing.shownLine = shown;
   const next = lines[Math.floor(current) + 1];
   if (line) {
-    // The line as heard, cut after as many of its words as have been sung.
+    // The line as written (or as heard), cut after as many of its words as have been sung.
     const spans = [...line.text.matchAll(/[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)*/gu)];
-    const cut = words >= spans.length ? line.text.length : words ? spans[words].index : 0;
+    let cut = words >= spans.length ? line.text.length : words ? spans[words].index : 0;
+    const last = spans[words - 1];
+    if (parts && last && letters < parts[parts.length - 1][0]) {  // in the middle of a word: after that many letters
+      let at = 0;
+      for (let seen = 0; at < last[0].length && seen < letters; at++) if (/[\p{L}\p{N}]/u.test(last[0][at])) seen++;
+      cut = last.index + at;
+    }
     $("s-line").replaceChildren(line.text.slice(0, cut), element("span", line.text.slice(cut), "to-come"));
   } else $("s-line").replaceChildren();
   $("s-next").textContent = next ? next.text : "";
@@ -1118,6 +1143,30 @@ $("t-mic").addEventListener("change", (event) => {  // listened to from now on, 
   startTuning();
 });
 
+// `shed serve` stopped on the Mac (Ctrl+C): the page stops listening and closes. A browser only lets a page close
+// itself if a script opened it, which one opened from a link or a QR code wasn't: then it says it can be closed.
+// The Mac is asked whether it still runs and answers when it stops, or after a while (then it's asked again). A take
+// being recorded, or not sent yet, is left on the page: it can still be saved on the phone.
+async function untilStopped() {
+  for (;;) {
+    try {
+      const response = await fetch("open", { headers: { "X-Woodshed-Key": key }, cache: "no-store" });
+      if (!response.ok) return;
+      if ((await response.json()).closed) break;
+    } catch (_) { await sleep(3000); }  // out of reach: the Wi-Fi, or the phone asleep
+  }
+  if (recorder || unsent) {
+    say("shed serve was stopped on your Mac: this take can't be sent to it now.");
+    return;
+  }
+  clearTimeout(polling);
+  stopSinging();
+  stopTuning();
+  window.close();
+  document.body.replaceChildren(element("h1", "Woodshed"),
+                                element("p", "shed serve was stopped on your Mac. You can close this page.", "hint"));
+}
+
 $("tab-record").addEventListener("click", () => tab("record"));
 $("tab-tune").addEventListener("click", () => tab("tune"));
 $("tab-sing").addEventListener("click", () => tab("sing"));
@@ -1127,7 +1176,10 @@ window.addEventListener("beforeunload", (event) => {
   if (recorder || unsent) { event.preventDefault(); event.returnValue = ""; }  // a take would be lost
 });
 if (!key) say("Open the link that shed serve shows: this one is missing its key.");
-else follow();  // the takes sent before this page was (re)loaded
+else {
+  follow();  // the takes sent before this page was (re)loaded
+  untilStopped();
+}
 </script>
 </body>
 </html>

@@ -52,6 +52,9 @@ class TabError(Exception):
 class Track:
     name: str
     notes: list[tuple[float, float, int]]  # (start, end, in seconds from the tab's start; MIDI note), one at a time
+    # The words sung on its notes, where the tab writes them (Songsterr's do, under a voice): (the word, its start
+    # and end, as the notes'; its syllables as (text, start) when it has several, each on a note of its own).
+    words: list[tuple[str, float, float, list[tuple[str, float]]]] | None = None
 
 
 @dataclass
@@ -63,6 +66,7 @@ class Placed:
     share: float  # of the time its notes sound, how much is on the note the recording's singer sings then
     key: int  # semitones the tab is written under the recording (over: negative): a capo's worth, usually
     close: str | None = None  # the name of another track that fit nearly as well (CLOSE), if one did
+    words: list[list] | None = None  # the track's words, timed in the recording: [word, start, end, [[syllable, start]…]]
 
 
 @dataclass
@@ -74,6 +78,8 @@ class Score:
     order: list[int]  # the bars, in the order they're played (played())
     parts: list[tuple[str, list[list[tuple[float, int | None, bool]]]]]  # each track's name, and its bars' beats:
     # (length in quarter notes, the MIDI note it sounds (of several, the highest; None: silent), tied to the one before)
+    sung: list[list[list[str | None]] | None] | None = None  # each track's syllables, beat by beat as `parts` (None:
+    # the tab writes no words under it). One ending in "-" goes on into the next, as a word's syllables are written.
 
 
 def tracks(path: Path) -> list[Track]:
@@ -148,11 +154,13 @@ def timed(score: Score) -> list[Track]:
         return total
 
     found = []
-    for name, bars in score.parts:
+    for number, (name, bars) in enumerate(score.parts):
         notes, now, ringing = [], 0.0, None  # ringing: the index of the note a tie would carry on
+        sung = score.sung[number] if score.sung else None
+        said = []  # (syllable, the note it's sung on)
         for bar in score.order:
             at = 0.0
-            for length, pitch, tied in (bars[bar] if bar < len(bars) else []):
+            for k, (length, pitch, tied) in enumerate(bars[bar] if bar < len(bars) else []):
                 start, end = now + clock(bar, at), now + clock(bar, at + length)
                 if pitch is None:
                     ringing = None
@@ -161,10 +169,27 @@ def timed(score: Score) -> list[Track]:
                 else:
                     notes.append((start, end, pitch))
                     ringing = len(notes) - 1
+                    if sung and bar < len(sung) and k < len(sung[bar]) and sung[bar][k]:
+                        said.append((sung[bar][k], ringing))
                 at += length
             now += clock(bar, score.lengths[bar])
-        found.append(Track(name, notes))
+        found.append(Track(name, notes, _words(said, notes) if sung else None))
     return found
+
+
+def _words(said: list[tuple[str, int]], notes: list[tuple[float, float, int]]) -> list[tuple]:
+    """The syllables sung on notes, joined into words (Track.words): one ending in "-" goes on into the next."""
+    words, parts = [], []
+    for k, (syllable, note) in enumerate(said):
+        parts.append((syllable.rstrip("-"), note))
+        if syllable.endswith("-") and k + 1 < len(said) and said[k + 1][1] == note + 1:
+            continue  # the word goes on, on the next note
+        text = "".join(part for part, _ in parts)
+        if text:
+            words.append((text, notes[parts[0][1]][0], notes[parts[-1][1]][1],
+                          [(part, notes[n][0]) for part, n in parts if part] if len(parts) > 1 else []))
+        parts = []
+    return words
 
 
 def played(bars: list[tuple[bool, int, frozenset[int]]]) -> list[int]:
@@ -249,9 +274,11 @@ def place(found: list[Track], contour: list[float | None], hop: float, named: st
     sung = np.array([p for p in contour if p is not None])
     written = float(np.median([n[2] - 69 + key for n in track.notes]))
     octave = 12 * round((float(np.median(sung)) - written) / 12)
-    return Placed(track, [(round(float(a * stretch + shift), 2), round(float(b * stretch + shift), 2),
-                           float(p - 69 + key + octave)) for a, b, p in track.notes], float(share),
-                  int((key + 6) % 12 - 6), others[0] if others else None)
+    at = lambda seconds: round(float(seconds * stretch + shift), 2)  # noqa: E731
+    return Placed(track, [(at(a), at(b), float(p - 69 + key + octave)) for a, b, p in track.notes], float(share),
+                  int((key + 6) % 12 - 6), others[0] if others else None,
+                  None if track.words is None else [[word, at(a), at(b), [[part, at(when)] for part, when in parts]]
+                                                    for word, a, b, parts in track.words])
 
 
 def _role(name: str) -> int:

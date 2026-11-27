@@ -130,7 +130,8 @@ order they arrive, so naming the first take of a new song lets the next ones be 
 - The page's Sing tab plays a song's reference recording in your headphones, and draws your pitch over its
   melody as you sing along (see Singing along).
 - The page's Tune tab tunes your guitar, as `shed tune` does (see Tuning your guitar), from the phone's microphone.
-- Ctrl+C stops it. A take being filed is finished first; one whose song you haven't said yet waits for
+- Ctrl+C stops it, and the page on your phone closes (or, where the browser won't let a page close itself, says
+  it can be closed, and stops listening). A take being filed is finished first; one whose song you haven't said yet waits for
   `shed add`, as does any take that couldn't be filed.
 - The page records music as it sounds: without the noise suppression, echo cancellation and automatic volume
   that phones apply to calls.
@@ -379,7 +380,9 @@ The Sing tab of `shed serve`'s page plays a song's reference recording, and draw
 melody as it scrolls by, as karaoke games do. Put headphones on, so the microphone hears you and your instrument,
 not the recording. Nothing is recorded.
 
-- The melody is drawn as a band in every octave: blue in the octave its singer sings it in, grey in the others.
+- The melody is drawn as a band in every octave, each in its own colour: blue in the octave its singer sings it in,
+  violet then purple in those above, teal in the one below (fainter than the singer's). When the melody leaps an
+  octave, the colours change rows, so you see it in whichever octave you sing.
   Your notes are drawn at the pitch you sang them, so you see which octave you're in. They're green on the
   melody's note, yellow a semitone off, red further, going by the octave of the melody nearest them: any octave of
   a note counts, and a fifth off is a fifth off in all of them. The picture, 20 semitones tall at most
@@ -395,10 +398,11 @@ not the recording. Nothing is recorded.
 - The melody heard in a recording wanders: its singer slides into notes and bends them, and some are misheard.
   With a tab of the song that has its melody, the picture shows the notes the tab writes instead, as blocks (what
   the singer sings stays, as a thin faint line over them), and you're set against those:
-  `shed reference harbor --songsterr` opens a page on your Mac that waits for a tab from Songsterr. Open the song's
+  `shed reference harbor --songsterr` looks the song up on Songsterr by its name and artist, and downloads its
+  tab's tracks from Songsterr's CDN. If Songsterr doesn't answer, has no tab under that name, or none with the
+  melody, it opens a page on your Mac that waits for a tab you pick: open the song's
   tab on songsterr.com and click the **To Woodshed** bookmark (the first time, drag it to your bookmarks bar from
-  that page): Woodshed downloads the tab's tracks itself, from Songsterr's CDN. Songsterr turns away anything but a
-  browser asking where a tab is, hence the bookmark, which reads it off Songsterr's own page. Or give a Guitar Pro
+  that page), which reads where the tab is off Songsterr's own page. Or give a Guitar Pro
   file: `shed reference harbor --tab ~/Downloads/harbor-lights.gp` (a
   .gp, as Songsterr saves them; the older .gp5 and .gpx aren't read, nor is MIDI). Woodshed finds which of the tab's
   tracks is the voice, and where its notes fall in the recording, in which key and at what tempo, by laying each
@@ -413,6 +417,19 @@ not the recording. Nothing is recorded.
   `--no-tab` goes back to the melody heard. The tab goes with the reference: set another recording,
   and give the tab again. Repeats and alternate endings are followed; a Guitar Pro file with alternate endings or
   jumps (D.S., coda) isn't read.
+- The words under the picture are the song's lyrics as Genius writes them, when Genius recognized one of your takes
+  of it: each word shown when the same word was heard in the recording, so what Whisper misheard reads right. They're
+  fetched from the song's page on genius.com when you set the reference (and by `shed serve`, once, for references
+  set before); `shed reference harbor` says where they're from. A line misheard all through is shown when the words heard in its place were sung. On 9 songs, 274 of Genius's
+  289 lines were timed this way; a line nothing was heard of (a "woah", a backing voice) is left out. Without them (Genius
+  out of reach, or its lyrics not those sung in the recording), the words heard in the recording are shown.
+  A tab from Songsterr writes the words under the voice's notes (a Guitar Pro file doesn't): Genius's words are
+  then shown when their note comes, as that's where its block is, and syllable by syllable where the tab splits
+  the word the same way. The words heard still time what the tab doesn't write, and a line whose notes are more
+  than a second from where its words were heard (a syllable too many in the tab, and its words slide). A line
+  Genius writes more times than the tab's singer sings it is left out. On 2 songs, the notes timed 204 of 242
+  and 114 of 118 words; a word's note started 0.15 and 0.3 s after the word was heard, typically. `shed serve`
+  gets the words of tabs kept before this, once.
 - Two sliders set how loud the band and the singer are: turn the singer down once you know the melody, and both
   once you have the rhythm. The melody keeps scrolling, in time.
 - Your notes are drawn about a fifth of a second after you sing them: the pitch tracker needs to hear a little of

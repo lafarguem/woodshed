@@ -243,6 +243,7 @@ def test_shed_reference_gets_a_tab_from_songsterr(harbor, monkeypatch):
     assert said[0][0] is False and "None of the tracks of Songsterr's tab of “Other”" in said[0][1]
     assert said[1][0] is True and said[1][1].startswith("✓ Singing along to “Harbor Lights”")
     shown = text(result)
+    assert "Songsterr couldn't be reached (offline). Pick the tab yourself:" in shown  # asked first: see below
     assert "Waiting for another tab" in shown
     assert ("Singing along to “Harbor Lights” now goes by the 48 notes of “Singer” in Songsterr's tab of “Harbor "
             "Lights” by The Tides.") in shown
@@ -250,3 +251,98 @@ def test_shed_reference_gets_a_tab_from_songsterr(harbor, monkeypatch):
     assert reference.tab["file"] == SENT["url"] and reference.tab["notes"][0] == pytest.approx([2.0, 2.5, -12.0], abs=0.08)
 
     assert harbor("reference", "harbor", "--songsterr", "--no-tab").exit_code == 1
+
+
+LYRICS = [{"line": 1, "offset": 2, "text": "Har-bor lights are low+now\nand I'm go- ing home to-night ex-tra words"},
+          {"line": 2, "offset": 1, "text": ""}]
+
+
+def sung_track():
+    """A voice with words under its notes, from its second bar: a rest and a tied note take none."""
+    bars = [[beat((1, 1), note(60, 1))],
+            [beat((1, 4), note(57, 1)), beat((1, 4), note(60, 1)), beat((1, 4)), beat((1, 4), note(62, 1))],
+            [beat((1, 4), note(64, 1)), beat((1, 4), note(64, 1, tie=True)), beat((1, 4), note(60, 1)),
+             beat((1, 4), note(57, 1))],
+            [beat((1, 4), note(55, 1)), beat((1, 4), note(57, 1)), beat((1, 4), note(60, 1)), beat((1, 4), note(62, 1))],
+            [beat((1, 2), note(64, 1)), beat((1, 2), note(62, 1))]]
+    return {**track(bars), "newLyrics": LYRICS}
+
+
+def test_the_words_under_a_voices_notes_are_read_syllable_by_syllable():
+    [voice] = read(sung_track())
+    assert [(word, a, b) for word, a, b, _ in voice.words] == [
+        ("Harbor", 2.0, 3.0), ("lights", 3.5, 4.0), ("are", 4.0, 5.0), ("low now", 5.0, 5.5), ("and", 5.5, 6.0),
+        ("I'm", 6.0, 6.5), ("going", 6.5, 7.5), ("home", 7.5, 8.0), ("tonight", 8.0, 10.0)]  # the rest has no note
+    assert voice.words[0][3] == [("Har", 2.0), ("bor", 2.5)] and voice.words[1][3] == []
+    assert voice.words[-1][3] == [("to", 8.0), ("night", 9.0)]
+    [plain] = read(track([[beat((1, 1), note(60, 1))]]))
+    assert plain.words is None
+
+
+def test_songsterr_is_asked_for_a_songs_tab(monkeypatch):
+    asked = []
+    answers = {"songs": [{"songId": 9, "artist": "Someone", "title": "Harbor Lights"},
+                         {"songId": 8, "artist": "The Tides", "title": "Harbor Lights (Fingerstyle)"},
+                         {"songId": 27, "artist": "The Tides", "title": "Harbor lights"}, "junk"],
+               "meta/27": {"songId": 27, "revisionId": 5184162, "image": "v5-2-1-GEwclkOmjsFXZOxQ",
+                           "title": "Harbor Lights", "artist": "The Tides",
+                           "tracks": [{"instrumentId": 66, "name": "Singer", "tuning": GUITAR},
+                                      {"instrumentId": 1024, "name": "Drums"}]}}
+    monkeypatch.setattr(songsterr, "_ask", lambda path, timeout=15: asked.append(path) or answers[path.split("?")[0]])
+    assert songsterr.find("Harbor Lights", "The Tides") == [27, 9]  # this very title, the artist's first
+    assert "pattern=The+Tides+Harbor+Lights" in asked[0]
+    found = songsterr.fetch(27)
+    assert (found.id, found.revision, found.image, found.url) == (27, 5184162, SENT["image"], SENT["url"])
+    assert [(t.part, t.name, t.drums) for t in found.tracks] == [(0, "Singer", False), (1, "Drums", True)]
+    assert songsterr.song_id(found.url) == 27 and songsterr.song_id("~/Downloads/harbor-s27.gp") is None
+    answers["meta/27"] = {"error": "not found"}
+    with pytest.raises(tab.TabError):
+        songsterr.fetch(27)
+
+
+def test_shed_reference_asks_songsterr_before_the_bookmark_and_times_the_lyrics_by_its_notes(harbor, monkeypatch, tone):
+    from datetime import datetime
+
+    from conftest import add_take
+    from test_melody import LINES
+
+    from woodshed import cli
+    from woodshed.lyrics import words
+    from woodshed.melody import Melody
+
+    add_take(harbor.library, tone, "Harbor Lights", 8, 13, datetime(2026, 6, 2, 20, 0), LINES, genius_id=7)
+    harbor.lyrics[7] = ("https://genius.com/harbor-lights-lyrics", LINES)
+    sung = [w for line in LINES for w in words(line)]
+    tune = [57, 60, 62, 64, 60, 57, 55, 59]
+    under = " ".join(w[:2] + "-" + w[2:] if len(w) > 3 else w for w in sung)  # the longer words on two notes
+    bars = [[beat((1, 4), note(tune[(4 * bar + k) % 8], 1)) for k in range(4)]
+            for bar in range(-(-len(under.replace("-", "- ").split()) // 4))]
+    singer = {**track(bars), "newLyrics": [{"line": 1, "offset": 1, "text": under}]}
+    [voice] = read(singer)
+    # In the recording, the song starts 2 s in, and each word was heard a fifth of a second before its note.
+    line_of = [n for n, line in enumerate(LINES) for _ in words(line)]
+    set_reference(harbor, Melody(LINES, [(w, a + 1.8, b + 1.8, n) for (w, a, b, _), n in zip(voice.words, line_of)],
+                                 [(a + 2.0, b + 2.0, p - 69) for a, b, p in voice.notes], None))
+    folder = harbor.library.root / "Harbor Lights"
+    kept = json.loads((folder / ".reference.json").read_text())
+    kept["contour"] = heard([(a + 2.0, b + 2.0, p - 69) for a, b, p in voice.notes], voice.notes[-1][1] + 4)
+    (folder / ".reference.json").write_text(json.dumps(kept))
+    monkeypatch.setattr(songsterr, "find", lambda title, artist=None: [27])
+    monkeypatch.setattr(songsterr, "fetch", lambda song_id: songsterr.song(SENT))
+    monkeypatch.setattr(songsterr, "download", lambda tab: [(songsterr.Track(0, "Singer", GUITAR, False), singer)])
+    monkeypatch.setattr(songsterr, "Waiting", None)  # the bookmark isn't waited for
+
+    result = harbor("reference", "harbor", "--songsterr")
+    assert result.exit_code == 0, result.output
+    assert "Singing along to “Harbor Lights” now goes by" in text(result) and "Pick the tab" not in text(result)
+    reference = harbor.library.reference("Harbor Lights")
+    assert len(reference.tab["words"]) == len(sung) and reference.tab["file"] == SENT["url"]
+    shown = cli._to_sing_along(harbor.library, "Harbor Lights").lines
+    assert [line["text"] for line in shown] == LINES
+    timed = [w for line in shown for w in line["words"]]
+    assert [w[1] for w in timed] == [w[1] for w in reference.tab["words"]]  # each when its note starts
+    long = next(w for w in timed if len(w[0]) > 3)  # written on two notes: lit up in two parts
+    assert [letters for letters, _ in long[3]] == [2, len(long[0])] and long[3][0][1] == long[1] < long[3][1][1]
+
+    harbor("reference", "harbor", "--no-tab")  # without the tab, by the words heard again
+    assert all(len(w) == 3 for line in cli._to_sing_along(harbor.library, "Harbor Lights").lines for w in line["words"])
