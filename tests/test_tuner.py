@@ -68,6 +68,28 @@ def test_a_string_is_read_through_a_small_microphone_and_a_rooms_noise():
             assert read == pytest.approx(note, abs=0.04)
 
 
+def bright(note: float, odd: float = 1.0, rate: int = 48_000, seconds: float = 0.6) -> np.ndarray:
+    """A brighter, stiffer string than pluck()'s, its odd partials (the fundamental too) `odd` times as loud as
+    they'd be: faint, the string is nearly the same half a period later, as the string an octave up would be."""
+    t, hz = np.arange(int(seconds * rate)) / rate, 440 * 2 ** (note / 12)
+    wave = sum((odd if k % 2 else 1.0) / k * np.exp(-t * (0.8 + 0.25 * k))
+               * np.sin(2 * np.pi * k * hz * np.sqrt(1 + 1e-4 * k * k) * t + k * k) for k in range(1, 30) if k * hz < 8000)
+    return (0.1 * wave + 0.003 * np.random.default_rng(0).standard_normal(len(t))).astype(np.float32)
+
+
+def test_a_string_with_faint_odd_partials_isnt_read_an_octave_up():
+    for note in tuner.TUNINGS[0].notes:
+        assert tuner.heard(bright(note, odd=0.15), 48_000) == pytest.approx(note, abs=0.1)
+
+
+def test_a_string_is_read_while_the_one_plucked_before_still_rings():
+    notes = tuner.TUNINGS[0].notes
+    for note, before in zip(notes[1:], notes):  # going up the strings, the one below a quarter as loud
+        assert tuner.heard(bright(note) + 0.25 * bright(before), 48_000) == pytest.approx(note, abs=0.1)
+    for note, before in zip(notes, notes[1:]):  # and going down them
+        assert tuner.heard(bright(note) + 0.25 * bright(before), 48_000) == pytest.approx(note, abs=0.1)
+
+
 def test_silence_noise_and_a_strummed_chord_arent_read_as_a_string():
     rate = 48_000
     assert tuner.heard(np.zeros(rate, np.float32), rate) is None

@@ -5,6 +5,12 @@ of the tuning it takes it for, and how far from it you are. Nothing is recorded.
   tracker that follows your voice (rmvpe.py), which is made for a voice over an instrument, 20 ms at a time. A
   string alone repeats itself cleanly: a quarter of a second of one, made up with a faint fundamental and some
   noise, gave its pitch to within 2 cents, for every string of every tuning here.
+- A real string is less tidy than that, and v0.11.0 kept jumping to its harmonics. Three things stand against it
+  (pitch()): only 60 to 1500 Hz is listened to; a string with faint odd partials, which nearly repeats itself
+  after half a period, isn't read an octave up; and a string plucked while another still rings isn't read as
+  the low note both would be partials of. On made-up strings (bright and stiff, faint odd partials, a small
+  microphone that lets little through under 200 Hz), read 20 times a second as they die away: a string alone was
+  read wrong 46% of the time at worst before, and never now; with another string ringing 12 dB under, 4.5% at worst.
 - The latest sound is read three times, a quarter of a second each, 75 ms apart, and the middle of what was read
   is kept (heard()): one misreading, as a string is plucked, doesn't make the needle jump.
 - The string is the tuning's nearest to what's heard, unless you pick one: a new string, or one being taken to
@@ -24,9 +30,10 @@ HIGHEST_HZ = 700.0  # F5: over the top string's harmonic at the 12th fret
 WINDOW_SECONDS = 0.25  # of sound for one reading
 LISTEN_SECONDS = 0.4  # of the latest sound, for the readings heard() takes the middle of
 _READINGS = 3
-_CLEAR = 0.15  # how unlike itself the sound may be a period later (0: the same, 1: unrelated), for a pitch to be read…
-_UNCLEAR = 0.3  # …or at its best, when nowhere that clear…
-_AS_CLEAR = 0.05  # …at the first lag this near its best
+_BAND = (60.0, 1500.0)  # Hz: what's listened to
+_UNCLEAR = 0.3  # how unlike itself the sound may be a period later (0: the same, 1: unrelated), for a pitch to be read
+_AS_CLEAR = 0.15  # the period is the first lag this near the one it's most like itself at…
+_CLEARER = 0.03  # …unless it's this much more like itself at twice that lag
 _SILENCE = 1e-4  # quieter than this (RMS, -80 dBFS), nothing is plucked
 IN_TUNE_CENTS = 5
 NEAR_CENTS = 15
@@ -104,6 +111,12 @@ def pitch(samples: np.ndarray, rate: int) -> float | None:
     samples = samples - samples.mean()
     if np.sqrt(np.mean(samples**2)) < _SILENCE:
         return None
+    # Only what a string's first partials are made of is kept: under it is rumble and the mains' hum, over it
+    # noise, and a stiff string's high partials, which aren't quite multiples of its pitch.
+    spectrum = np.fft.rfft(samples)
+    hz = np.fft.rfftfreq(len(samples), 1 / rate)
+    spectrum *= np.clip((hz - _BAND[0] / 2) / (_BAND[0] / 2), 0, 1) * np.clip((_BAND[1] * 1.25 - hz) / (_BAND[1] / 4), 0, 1)
+    samples = np.fft.irfft(spectrum, len(samples))
     # How unlike the sound is itself, `lag` samples later: the sum of (x[j] - x[j + lag])² over the first `width`.
     size = 1 << (len(samples) + width - 1).bit_length()
     products = np.fft.irfft(np.fft.rfft(samples, size) * np.conj(np.fft.rfft(samples[:width], size)), size)[:longest + 1]
@@ -115,16 +128,24 @@ def pitch(samples: np.ndarray, rate: int) -> float | None:
     unlike[1:] *= np.arange(1, longest + 1) / np.maximum(np.cumsum(unlike[1:]), 1e-12)
     unlike[0] = 1.0
     shortest = max(2, int(rate / HIGHEST_HZ))
-    # The first lag at which it's clearly like itself: at twice or three times the period it's as like itself again,
-    # and with noise over a faint string, a little more so at one of those than at the period itself.
     lowest = float(unlike[shortest:longest].min())
     if lowest > _UNCLEAR:
         return None
-    bar = max(_CLEAR, lowest + _AS_CLEAR)
+    # The period is the first lag at which it's about as like itself as it gets: not quite as much as at twice or
+    # three times the period when another string still rings, which doesn't repeat itself until then.
+    bar = lowest + _AS_CLEAR
     lag = end = shortest + int(np.flatnonzero(unlike[shortest:longest] < bar)[0])
     while end < longest and unlike[end] < bar:
         end += 1
     lag += int(np.argmin(unlike[lag:end]))  # the bottom of that dip
+    # …unless that's half the period: a string whose odd partials are faint is nearly as like itself half a period
+    # later, and would be read an octave up. It's then clearly more like itself at twice that lag. (So is a string
+    # with another ringing an octave under it, or a fifth over it: the two can't be told apart.)
+    while 2 * lag * 0.97 < longest:
+        around = np.arange(int(2 * lag * 0.97), min(longest, int(2 * lag * 1.03) + 2))
+        if not unlike[around].min() < unlike[lag] - _CLEARER:
+            break
+        lag = int(around[np.argmin(unlike[around])])
     if lag <= shortest or lag >= longest - 1:  # still going down at an end: its pitch is out of reach
         return None
     # The bottom lies between two samples: it's that of the curve through the samples around it, as many as noise
