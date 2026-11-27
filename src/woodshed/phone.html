@@ -5,11 +5,31 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Woodshed</title>
 <style>
-  :root { --bg: #f6f4ef; --fg: #1d1b18; --dim: #6f6a61; --accent: #c0392b; --ok: #2e7d4f; --card: #fff; }
+  :root { --bg: #f6f4ef; --fg: #1d1b18; --dim: #6f6a61; --accent: #c0392b; --ok: #2e7d4f; --card: #fff;
+          --line: rgba(29, 27, 24, .14); --lift: 0 1px 2px rgba(29, 27, 24, .07); }
   @media (prefers-color-scheme: dark) {
-    :root { --bg: #151412; --fg: #efece6; --dim: #a39d92; --card: #22201d; }
+    :root { --bg: #151412; --fg: #efece6; --dim: #a39d92; --card: #22201d; --line: rgba(239, 236, 230, .14);
+            --lift: none; }
   }
   * { box-sizing: border-box; }
+  button, select, input:not([type=range]), .actions a { font: inherit; color: var(--fg); background: var(--card);
+                                      border: 1px solid var(--line); border-radius: 12px; }
+  button, select, .actions a { box-shadow: var(--lift); cursor: pointer; touch-action: manipulation;
+                               -webkit-tap-highlight-color: transparent;
+                               transition: transform .08s ease, background-color .15s, border-color .15s, color .15s; }
+  button:active:not(:disabled), .actions a:active { transform: scale(.97); }
+  @media (hover: hover) {  /* a mouse, not a finger: a phone would keep the last button tapped looking hovered */
+    button:hover:not(:disabled), select:hover, .actions a:hover { border-color: var(--dim); }
+    .tabs button:hover:not(.on) { color: var(--fg); }
+    #record:hover:not(:disabled) { filter: brightness(1.1); }
+    #s-play:hover { opacity: .85; }
+  }
+  button:disabled { opacity: .5; cursor: default; }
+  button:focus-visible, select:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid var(--fg);
+                                                                                     outline-offset: 2px; }
+  select { appearance: none; -webkit-appearance: none; padding-right: 34px !important; text-overflow: ellipsis;
+           background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' fill='none' stroke='%238a857b' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M1.5 1.5 6 6l4.5-4.5'/%3E%3C/svg%3E");
+           background-repeat: no-repeat; background-position: right 12px center; }
   body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--fg);
          font: 17px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
          display: flex; flex-direction: column; align-items: center;
@@ -17,19 +37,21 @@
   h1 { font-size: 20px; font-weight: 600; margin: 0 0 4px; letter-spacing: .02em; }
   .hint { color: var(--dim); font-size: 14px; margin: 0 0 28px; text-align: center; max-width: 26em; }
   #record { width: 176px; height: 176px; border-radius: 50%; border: 0; background: var(--accent); color: #fff;
-            font-size: 20px; font-weight: 600; box-shadow: 0 6px 24px rgba(192, 57, 43, .35); touch-action: manipulation; }
-  #record.on { background: var(--fg); color: var(--bg); box-shadow: none; }
-  #record:disabled { opacity: .5; }
+            font-size: 20px; font-weight: 600; letter-spacing: .01em;
+            box-shadow: 0 6px 24px rgba(192, 57, 43, .35), inset 0 1px 0 rgba(255, 255, 255, .18);
+            transition: transform .1s ease, background-color .2s, color .2s, box-shadow .2s; }
+  #record.on { background: var(--fg); color: var(--bg); box-shadow: 0 0 0 6px var(--line); }
   #clock { font: 600 40px/1 ui-monospace, SFMono-Regular, Menlo, monospace; margin: 24px 0 12px;
            font-variant-numeric: tabular-nums; }
-  #meter { width: min(320px, 80vw); height: 8px; border-radius: 4px; background: var(--card); overflow: hidden; }
-  #level { height: 100%; width: 0; background: var(--ok); transition: width .08s linear; }
+  #meter { width: min(320px, 80vw); height: 8px; border-radius: 4px; background: var(--card); overflow: hidden;
+           box-shadow: inset 0 0 0 1px var(--line); }
+  #level { height: 100%; width: 0; border-radius: 4px; background: var(--ok); transition: width .08s linear; }
   #status { min-height: 3em; margin: 20px 0 8px; text-align: center; max-width: 26em; }
   .actions { display: flex; gap: 12px; }
-  .actions button, .actions a { font: inherit; padding: 10px 16px; border-radius: 10px; border: 1px solid var(--dim);
-                                background: var(--card); color: var(--fg); text-decoration: none; }
+  .actions button, .actions a { padding: 10px 16px; text-decoration: none; }
   #takes { margin: 20px 0 0; width: min(420px, 94vw); }
-  .take { background: var(--card); border-radius: 12px; padding: 12px 14px; margin-bottom: 10px; font-size: 15px; }
+  .take { background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--lift);
+           padding: 12px 14px; margin-bottom: 10px; font-size: 15px; }
   .take header { display: flex; justify-content: space-between; color: var(--dim); font-size: 13px; }
   .take .song { font-weight: 600; font-size: 16px; margin-top: 4px; }
   .take .state { margin-top: 4px; }
@@ -39,28 +61,32 @@
   .take li .off { color: var(--accent); white-space: nowrap; }
   .take li .close { color: var(--ok); white-space: nowrap; }
   .take .choices { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
-  .take .choices button, .take .choices input { font: inherit; padding: 9px 12px; border-radius: 9px;
-                                               border: 1px solid var(--dim); background: var(--bg); color: var(--fg); }
+  .take .choices button, .take .choices input { padding: 9px 12px; border-radius: 10px; background: var(--bg);
+                                               box-shadow: none; }
   .take .choices form { display: flex; gap: 8px; }
   .take .choices input { flex: 1; min-width: 0; }
-  .tabs { display: flex; gap: 4px; background: var(--card); border-radius: 10px; padding: 3px; margin: 8px 0 18px; }
-  .tabs button { font: inherit; font-size: 15px; border: 0; border-radius: 8px; padding: 6px 22px; background: none;
-                 color: var(--dim); }
-  .tabs button.on { background: var(--bg); color: var(--fg); font-weight: 600; }
+  .tabs { display: flex; gap: 4px; background: var(--card); border: 1px solid var(--line); border-radius: 999px;
+          padding: 3px; margin: 8px 0 18px; }
+  .tabs button { font-size: 15px; border: 0; border-radius: 999px; padding: 6px 22px; background: none;
+                 box-shadow: none; color: var(--dim); }
+  .tabs button.on { background: var(--bg); color: var(--fg); font-weight: 600; box-shadow: inset 0 0 0 1px var(--line); }
   .view { display: flex; flex-direction: column; align-items: center; width: 100%; }
   #sing-songs { display: flex; flex-direction: column; gap: 8px; width: min(420px, 94vw); }
-  #sing-songs button, .sing-actions button { font: inherit; padding: 11px 14px; border-radius: 10px;
-                                             border: 1px solid var(--dim); background: var(--card); color: var(--fg); }
+  #sing-songs button { display: flex; justify-content: space-between; align-items: center; gap: 12px;
+                       padding: 13px 16px; text-align: left; }
+  #sing-songs button::after { content: "›"; color: var(--dim); font-size: 20px; line-height: 1; }
+  .sing-actions button { padding: 10px 16px; border-radius: 999px; font-variant-numeric: tabular-nums; }
   #sing { width: min(720px, 96vw); text-align: center; }
   #sing .dim, #sing-view .dim { color: var(--dim); }
   #s-song { font-weight: 600; font-size: 19px; }
-  #s-roll { display: block; width: 100%; height: 340px; margin: 10px 0 6px; border-radius: 12px; background: var(--card);
-            touch-action: none; }
+  #s-roll { display: block; width: 100%; height: 340px; margin: 10px 0 6px; border-radius: 14px; background: var(--card);
+            border: 1px solid var(--line); touch-action: none; }
   #s-tuner { display: flex; gap: 12px; align-items: center; justify-content: center; min-height: 34px; }
   #s-note { font-weight: 700; font-size: 24px; min-width: 2.6em; text-align: right; }
   #s-cents { font-variant-numeric: tabular-nums; min-width: 3.6em; text-align: left; }
   #s-meter { position: relative; width: 160px; height: 14px; }
-  #s-meter::before { content: ""; position: absolute; left: 0; right: 0; top: 6px; height: 2px; background: var(--dim);
+  #s-meter::before { content: ""; position: absolute; left: 0; right: 0; top: 6px; height: 2px; border-radius: 1px;
+                     background: var(--dim);
                      opacity: .4; }
   #s-meter::after { content: ""; position: absolute; left: 50%; top: 0; width: 2px; height: 14px; margin-left: -1px;
                     background: var(--dim); }
@@ -70,29 +96,27 @@
   #s-next { font-size: 15px; min-height: 1.5em; }
   #s-score { margin-top: 8px; font-size: 15px; min-height: 1.5em; }
   .sing-actions { display: flex; gap: 10px; justify-content: center; margin-top: 14px; flex-wrap: wrap; }
-  #s-play { font-weight: 600; min-width: 6.5em; }
+  #s-play { font-weight: 600; min-width: 6.5em; background: var(--fg); border-color: var(--fg); color: var(--bg); }
   .sliders { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; align-items: center; width: min(420px, 94vw);
              margin: 16px auto 0; font-size: 15px; text-align: left; }
   .sliders input { width: 100%; accent-color: var(--ok); }
   #s-sync { display: flex; gap: 10px; align-items: center; justify-content: center; margin-top: 12px; font-size: 14px; }
-  #s-sync button { font: inherit; width: 34px; height: 30px; border-radius: 8px; border: 1px solid var(--dim);
-                   background: var(--card); color: var(--fg); }
+  #s-sync button { width: 32px; height: 32px; padding: 0; border-radius: 50%; font-size: 12px; }
   #tuner { width: min(420px, 94vw); text-align: center; }
   #tune-view .dim { color: var(--dim); }
-  #t-tuning, #t-mic { font: inherit; padding: 9px 12px; border-radius: 10px; border: 1px solid var(--dim);
-                      background: var(--card); color: var(--fg); max-width: 100%; }
+  #t-tuning, #t-mic { padding: 9px 12px; max-width: 100%; }
   #t-mics { margin-top: 26px; font-size: 15px; }
   #t-mic { font-size: 15px; padding: 7px 10px; max-width: 70%; }
   #t-strings { display: flex; gap: 6px; justify-content: center; margin: 18px 0 6px; }
-  #t-strings button { font: inherit; flex: 1; max-width: 64px; padding: 10px 0; border-radius: 10px;
-                      border: 1px solid var(--dim); background: var(--card); color: var(--fg); touch-action: manipulation; }
+  #t-strings button { flex: 1; max-width: 64px; padding: 10px 0; }
   #t-strings button.only { border-color: var(--fg); box-shadow: inset 0 0 0 1px var(--fg); font-weight: 700; }
   #t-strings button.on-it { color: var(--ok); border-color: var(--ok); }
   #t-strings button.near { color: #b7950b; border-color: #b7950b; }
   #t-strings button.far { color: var(--accent); border-color: var(--accent); }
   #t-note { font-weight: 700; font-size: 64px; line-height: 1.15; min-height: 1.15em; margin-top: 10px; }
   #t-meter { position: relative; height: 34px; margin-top: 6px; }
-  #t-meter::before { content: ""; position: absolute; left: 0; right: 0; top: 16px; height: 2px; background: var(--dim);
+  #t-meter::before { content: ""; position: absolute; left: 0; right: 0; top: 16px; height: 2px; border-radius: 1px;
+                     background: var(--dim);
                      opacity: .4; }
   #t-meter::after { content: ""; position: absolute; left: 50%; top: 3px; width: 2px; height: 28px; margin-left: -1px;
                     background: var(--dim); }
@@ -680,6 +704,14 @@ async function sendSung(context) {
   }
 }
 
+// A block of the picture, its corners rounded where the browser can.
+function block(ink, left, top, width, height, radius) {
+  if (!ink.roundRect) { ink.fillRect(left, top, width, height); return; }
+  ink.beginPath();
+  ink.roundRect(left, top, width, height, Math.max(0, Math.min(radius, width / 2, height / 2)));
+  ink.fill();
+}
+
 function drawSung() {
   if (!singing.context) return;
   singing.frame = requestAnimationFrame(drawSung);
@@ -737,7 +769,7 @@ function drawSung() {
       if (at < low - 1 || at > high + 1) continue;
       ink.globalAlpha = octave ? 0.38 : 0.55;
       ink.fillStyle = octave ? color("--dim") : "#5b8fd9";
-      ink.fillRect(x(start), y(at + 0.5) + 1, Math.max(x(end) - x(start) - 1, 2), step - 2);
+      block(ink, x(start), y(at + 0.5) + 1, Math.max(x(end) - x(start) - 1, 2), step - 2, 4);
     }
   }
   const from = Math.max(0, Math.floor((now - NOW_AT * SPAN) / hop) - 1);
@@ -777,7 +809,7 @@ function drawSung() {
     const from = x(start.t) - 0.5, to = x(singing.trace[end].t) + 0.5;
     ink.globalAlpha = start.sure ? 0.75 : 0.25;
     ink.fillStyle = kind(start) === "yellow" ? "#b7950b" : color(kind(start));
-    ink.fillRect(from, y(note + 0.5) + step * 0.2, Math.max(to - from, 1.5), step * 0.6);  // the melody's shows around it
+    block(ink, from, y(note + 0.5) + step * 0.2, Math.max(to - from, 1.5), step * 0.6, 3);  // the melody's shows around it
     i = end + 1;
   }
   ink.lineWidth = 1.2;
