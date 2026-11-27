@@ -2,3 +2,7 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# Claude Code: its scratch checkouts and this machine's own settings
+.claude/worktrees/
+.claude/settings.local.json
