@@ -20,6 +20,10 @@ if any(a.startswith("ytsearch") for a in args):
     print("[youtube:search] not a video")
     print(json.dumps({{"url": "https://www.youtube.com/watch?v=b2", "title": "Harbor Lights (Live)", "uploader": "A Fan",
                       "duration": None}}))
+elif args[-1].endswith("refused") or args[-1].endswith("flaky") and len(open({log!r}).readlines()) < 3:
+    open(args[args.index("-o") + 1].replace("%(ext)s", "webm.part"), "wb").close()
+    print("ERROR: unable to download video data: HTTP Error 403: Forbidden", file=sys.stderr)
+    sys.exit(1)
 elif args[-1].endswith("gone"):
     print("ERROR: [youtube] gone: Video unavailable", file=sys.stderr)
     sys.exit(1)
@@ -69,3 +73,23 @@ def test_without_yt_dlp(monkeypatch):
     assert not youtube.available()
     with pytest.raises(youtube.YouTubeError, match="brew install yt-dlp"):
         youtube.search("harbor lights")
+
+
+def test_a_download_youtube_turns_away_is_tried_again(yt_dlp, tmp_path, monkeypatch):
+    monkeypatch.setattr(youtube, "_PAUSES", (0, 0))
+    audio, _ = youtube.download("https://www.youtube.com/watch?v=flaky", tmp_path)  # refused twice, then served
+    assert len(yt_dlp()) == 3 and audio.name == "original.webm" and not list(tmp_path.glob("*.part"))
+
+
+def test_a_download_turned_away_every_time_says_to_update_yt_dlp(yt_dlp, tmp_path, monkeypatch):
+    monkeypatch.setattr(youtube, "_PAUSES", (0, 0))
+    with pytest.raises(youtube.YouTubeError, match="HTTP Error 403: Forbidden, 3 times .*brew upgrade yt-dlp"):
+        youtube.download("https://www.youtube.com/watch?v=refused", tmp_path)
+    assert len(yt_dlp()) == 3
+
+
+def test_a_video_thats_gone_isnt_tried_again(yt_dlp, tmp_path, monkeypatch):
+    monkeypatch.setattr(youtube, "_PAUSES", (0, 0))
+    with pytest.raises(youtube.YouTubeError, match="Video unavailable"):
+        youtube.download("https://www.youtube.com/watch?v=gone", tmp_path)
+    assert len(yt_dlp()) == 1

@@ -4,11 +4,17 @@ It's only used when you ask (`shed reference`), and only downloads the video you
 deleted once its melody has been followed: what's kept, in the song's folder, is the melody and the recording as
 two mp3s to sing along to, its singer and the rest (library.set_reference()). yt-dlp is left to
 you, not bundled, because YouTube keeps changing and yt-dlp needs updating every few weeks to keep up.
+
+YouTube sometimes turns away a video's audio (HTTP 403) that it serves a moment later: the addresses yt-dlp is
+given for it can be refused, and asking again gets new ones. So a download refused that way, or cut off, is tried
+again (_PAUSES); an older yt-dlp is refused far more often, and is told to be updated.
 """
 
 import json
+import re
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -55,10 +61,27 @@ def search(query: str, results: int = 5) -> list[Video]:
     return videos
 
 
+_PAUSES = (3.0, 10.0)  # seconds before each download tried again
+_PASSING = re.compile(r"HTTP Error (403|429|5\d\d)|timed out|Connection (reset|aborted)|IncompleteRead|Read timed",
+                      re.I)  # what going again can get past (not a video gone or private)
+
+
 def download(url: str, folder: Path) -> tuple[Path, str]:
     """The video's audio, saved into `folder` (as it is on YouTube: no re-encoding), and the video's title."""
-    title = _run(["--no-playlist", "--no-simulate", "--print", "title", "--no-progress", "-f", "bestaudio[ext=m4a]/bestaudio",
-                  "-o", str(folder / "original.%(ext)s"), url]).strip()
+    for pause in (*_PAUSES, None):
+        for left in folder.glob("original.*"):  # a part of the last try
+            left.unlink()
+        try:
+            title = _run(["--no-playlist", "--no-simulate", "--print", "title", "--no-progress",
+                          "-f", "bestaudio[ext=m4a]/bestaudio", "-o", str(folder / "original.%(ext)s"), url]).strip()
+            break
+        except YouTubeError as e:
+            if not _PASSING.search(str(e)):
+                raise
+            if pause is None:
+                hint = " (an older yt-dlp is often turned away: brew upgrade yt-dlp)" if "403" in str(e) else ""
+                raise YouTubeError(f"{e}, {len(_PAUSES) + 1} times{hint}") from None
+            time.sleep(pause)
     saved = [p for p in folder.glob("original.*") if p.suffix != ".part"]
     if not saved:
         raise YouTubeError("yt-dlp didn't save the audio")
