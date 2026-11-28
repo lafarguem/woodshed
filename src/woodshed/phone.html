@@ -104,9 +104,9 @@
   #s-sync button { width: 32px; height: 32px; padding: 0; border-radius: 50%; font-size: 12px; }
   #tuner { width: min(420px, 94vw); text-align: center; }
   #tune-view .dim { color: var(--dim); }
-  #t-tuning, #t-mic { padding: 9px 12px; max-width: 100%; }
-  #t-mics { margin-top: 26px; font-size: 15px; }
-  #t-mic { font-size: 15px; padding: 7px 10px; max-width: 70%; }
+  #t-tuning { padding: 9px 12px; max-width: 100%; }
+  #mics { margin: -6px 0 16px; font-size: 15px; }
+  #mic { font-size: 15px; padding: 7px 10px; max-width: 70%; }
   #t-strings { display: flex; gap: 6px; justify-content: center; margin: 18px 0 6px; }
   #t-strings button { flex: 1; max-width: 64px; padding: 10px 0; }
   #t-strings button.only { border-color: var(--fg); box-shadow: inset 0 0 0 1px var(--fg); font-weight: 700; }
@@ -133,6 +133,7 @@
   <h1>Woodshed</h1>
   <div class="tabs"><button type="button" id="tab-record" class="on">Record</button><button type="button"
     id="tab-sing">Sing</button><button type="button" id="tab-tune">Tune</button></div>
+  <div id="mics" class="dim" hidden><label for="mic">Microphone</label> <select id="mic"></select></div>
   <div class="view" id="record-view">
   <p class="hint">Each take you record here is sent to your Mac and filed under its song.</p>
   <button id="record" type="button">Record</button>
@@ -185,7 +186,6 @@
       <div id="t-meter"><div id="t-needle" hidden></div></div>
       <div id="t-ends"><span>♭ flat</span><span>sharp ♯</span></div>
       <div id="t-state"></div>
-      <div id="t-mics" class="dim" hidden><label for="t-mic">Microphone</label> <select id="t-mic"></select></div>
     </div>
     <p class="dim" id="t-wait"></p>
   </div>
@@ -201,6 +201,43 @@ const answering = new Set();  // takes whose question was just answered, until t
 
 const clock = (seconds) => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
 const say = (text) => { status.textContent = text; };
+const kept = (name) => { try { return localStorage.getItem(name); } catch (_) { return null; } };
+// Music, not a phone call: no noise suppression, echo cancellation or automatic gain, which smear notes.
+const MUSIC = { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
+const FIND = "find";  // the picker's choice that asks to use the microphone, for the browser to name them all
+
+// The microphone picked (on any tab, kept for next time), or the phone's usual one if it's gone (a headset put away).
+async function microphone() {
+  const wanted = kept("woodshed-mic");
+  let found;
+  try {
+    found = await navigator.mediaDevices.getUserMedia({ audio: wanted ? { ...MUSIC, deviceId: { exact: wanted } } : MUSIC });
+  } catch (error) {
+    if (!wanted || !["OverconstrainedError", "NotFoundError"].includes(error.name)) throw error;
+    found = await navigator.mediaDevices.getUserMedia({ audio: MUSIC });
+  }
+  showMicrophones(found);
+  return found;
+}
+
+// The microphones the phone has (its own, a headset's, an audio interface's), to pick the one listened to. A browser
+// only names them once the microphone is allowed: until then, a choice asks for it.
+async function showMicrophones(listening) {
+  let inputs = [];
+  try {
+    inputs = (await navigator.mediaDevices.enumerateDevices()).filter((device) => device.kind === "audioinput");
+  } catch (_) { /* none to pick from */ }
+  const select = $("mic"), named = inputs.filter((input) => input.deviceId && input.label);
+  const track = listening && listening.getAudioTracks()[0];
+  const used = [track && track.getSettings ? track.getSettings().deviceId : null, kept("woodshed-mic")].find(
+    (id) => named.some((input) => input.deviceId === id));
+  const option = (text, value) => { const choice = element("option", text); choice.value = value; return choice; };
+  if (named.length) {
+    select.replaceChildren(...named.map((input) => option(input.label, input.deviceId)));
+    if (used) select.value = used;
+  } else select.replaceChildren(option("The phone's own", ""), option("Others…", FIND));
+  $("mics").hidden = !inputs.length || (named.length === 1);
+}
 
 async function start() {
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder) {
@@ -208,9 +245,7 @@ async function start() {
     return;
   }
   try {
-    // Music, not a phone call: no noise suppression, echo cancellation or automatic gain, which smear notes.
-    stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+    stream = await microphone();
   } catch (error) {
     say(error.name === "NotAllowedError"
       ? "The microphone isn't allowed: allow it for this page (the icon next to the address), then try again."
@@ -224,6 +259,7 @@ async function start() {
   recorder.ondataavailable = (event) => { if (event.data.size) chunks.push(event.data); };
   recorder.onstop = finish;
   recorder.start(1000);
+  $("mic").disabled = true;  // a take keeps its microphone
   started = Date.now();
   button.textContent = "Stop";
   button.classList.add("on");
@@ -259,6 +295,7 @@ function stop() {
 
 function finish() {
   clearInterval(ticker);
+  $("mic").disabled = false;
   stream.getTracks().forEach((track) => track.stop());
   if (wakeLock) wakeLock.release().catch(() => {});
   if (audioContext) audioContext.close().catch(() => {});
@@ -462,8 +499,7 @@ async function startSinging(title) {
   const list = $("sing-songs");
   const say = (text) => list.replaceChildren(element("div", text, "dim"));
   try {
-    singing.stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+    singing.stream = await microphone();
   } catch (error) {
     list.prepend(element("div", error.name === "NotAllowedError"
       ? "The microphone isn't allowed: allow it for this page (the icon next to the address), then try again."
@@ -499,7 +535,7 @@ async function startSinging(title) {
     return;
   }
   if (singing.context !== context) return;
-  const source = context.createMediaStreamSource(singing.stream);
+  const source = singing.source = context.createMediaStreamSource(singing.stream);
   const take = (samples, time) => singing.pieces.push({ samples, time });  // what the microphone heard, and when
   if (context.audioWorklet) {
     const code = `registerProcessor("heard", class extends AudioWorkletProcessor {
@@ -551,7 +587,7 @@ function stopSinging() {
     fetch("sing/stop", { method: "POST", headers: { "X-Woodshed-Key": key } }).catch(() => {});
   }
   if (singing.wakeLock) singing.wakeLock.release().catch(() => {});
-  Object.assign(singing, { context: null, stream: null, node: null, pieces: [], anchors: [], sent: 0, song: null,
+  Object.assign(singing, { context: null, stream: null, source: null, node: null, pieces: [], anchors: [], sent: 0, song: null,
                            buffers: {}, gains: {}, sources: [], playing: false, startedAt: 0, offset: 0, trace: [],
                            wakeLock: null, frame: 0, shownLine: -2, scoredAt: 0, goal: null });
   $("s-play").textContent = "▶ Play";
@@ -953,22 +989,14 @@ const tuning = { context: null, stream: null, node: null, heard: null, filled: 0
                  only: null, reading: null, readAt: 0, wakeLock: null };
 const TUNED_KEPT = 1000;  // a reading stays this long (ms) once the string has died away, faded
 const tunedColors = { "on-it": "var(--ok)", near: "#b7950b", far: "var(--accent)" };
-const kept = (name) => { try { return localStorage.getItem(name); } catch (_) { return null; } };
-
 async function startTuning() {
   stopTuning();
   const say = (text) => { $("t-wait").textContent = text; };
   say("");
   let context, stream;
-  const audio = { echoCancellation: false, noiseSuppression: false, autoGainControl: false }, wanted = kept("woodshed-mic");
   try {
     context = tuning.context = new AudioContext();  // made in the tap itself, or a phone keeps it silent
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: wanted ? { ...audio, deviceId: { exact: wanted } } : audio });
-    } catch (error) {  // the microphone picked last time is gone (a headset put away): the phone's usual one
-      if (!wanted || !["OverconstrainedError", "NotFoundError"].includes(error.name)) throw error;
-      stream = await navigator.mediaDevices.getUserMedia({ audio });
-    }
+    stream = await microphone();
   } catch (error) {
     if (tuning.context === context) stopTuning();
     say(error.name === "NotAllowedError"
@@ -1033,30 +1061,7 @@ async function startTuning() {
   select.selectedIndex = tuning.chosen;
   showStrings();
   $("tuner").hidden = false;
-  showMicrophones(context, stream);
   sendPlucked(context);
-}
-
-// The microphones the phone has (its own, a headset's, an audio interface's), to pick the one listened to: shown when
-// there's more than one. Their names are only told once the microphone is allowed.
-async function showMicrophones(context, stream) {
-  const select = $("t-mic");
-  let inputs = [];
-  try {
-    inputs = (await navigator.mediaDevices.enumerateDevices()).filter((device) => device.kind === "audioinput" && device.deviceId);
-  } catch (_) { /* none to pick from */ }
-  if (tuning.context !== context) return;
-  // The one listened to, as the browser tells it, or else the one asked for.
-  const track = stream.getAudioTracks()[0];
-  const used = [track.getSettings ? track.getSettings().deviceId : null, kept("woodshed-mic")].find(
-    (id) => inputs.some((input) => input.deviceId === id));
-  select.replaceChildren(...inputs.map((input, i) => {
-    const choice = element("option", input.label || `Microphone ${i + 1}`);
-    choice.value = input.deviceId;
-    return choice;
-  }));
-  if (used) select.value = used;
-  $("t-mics").hidden = inputs.length < 2;
 }
 
 function stopTuning() {
@@ -1142,10 +1147,33 @@ $("t-tuning").addEventListener("change", (event) => {
   try { localStorage.setItem("woodshed-tuning", tuning.tunings[tuning.chosen].name); } catch (_) { /* not kept */ }
   showStrings();
 });
-$("t-mic").addEventListener("change", (event) => {  // listened to from now on, and the next time
+$("mic").addEventListener("change", async (event) => {  // listened to from now on, on every tab, and the next time
+  if (event.target.value === FIND) {
+    try { (await navigator.mediaDevices.getUserMedia({ audio: true })).getTracks().forEach((track) => track.stop()); }
+    catch (_) { /* not allowed: still unnamed */ }
+    await showMicrophones(null);
+    return;
+  }
   try { localStorage.setItem("woodshed-mic", event.target.value); } catch (_) { /* not kept */ }
-  startTuning();
+  if (tuning.context) startTuning();
+  if (singing.context && singing.node) switchSingingMicrophone(singing.context);
 });
+if (navigator.mediaDevices) {
+  navigator.mediaDevices.addEventListener("devicechange", () => showMicrophones(tuning.stream || singing.stream || stream));
+  showMicrophones(null);
+}
+
+// Singing goes on with the microphone just picked, the song still playing.
+async function switchSingingMicrophone(context) {
+  let found;
+  try { found = await microphone(); } catch (_) { return; }  // the one listened to stays
+  if (singing.context !== context) { found.getTracks().forEach((track) => track.stop()); return; }
+  singing.source.disconnect();
+  singing.stream.getTracks().forEach((track) => track.stop());
+  singing.stream = found;
+  singing.source = context.createMediaStreamSource(found);
+  singing.source.connect(singing.node);
+}
 
 // `shed serve` stopped on the Mac (Ctrl+C): the page stops listening and closes. A browser only lets a page close
 // itself if a script opened it, which one opened from a link or a QR code wasn't: then it says it can be closed.

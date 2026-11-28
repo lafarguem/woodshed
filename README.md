@@ -130,6 +130,9 @@ order they arrive, so naming the first take of a new song lets the next ones be 
 - The page's Sing tab plays a song's reference recording in your headphones, and draws your pitch over its
   melody as you sing along (see Singing along).
 - The page's Tune tab tunes your guitar, as `shed tune` does (see Tuning your guitar), from the phone's microphone.
+- When the phone has more than one microphone (a headset's, an audio interface's), a list under the tabs picks
+  the one Record, Sing and Tune listen to, and the page remembers it. Picked while singing or tuning, it's listened
+  to at once; while recording, from the next take.
 - Ctrl+C stops it, and the page on your phone closes (or, where the browser won't let a page close itself, says
   it can be closed, and stops listening). A take being filed is finished first; one whose song you haven't said yet waits for
   `shed add`, as does any take that couldn't be filed.
@@ -371,8 +374,7 @@ Tuner  Drop D
 - Strummed strings, talk and noise aren't read: it waits for one string ringing alone.
 - Notes are counted from A at 440 Hz.
 - Away from the Mac, tune from your phone: `shed serve`, then the page's Tune tab. Pick the tuning in its list,
-  and tap a string to keep to it. When the phone has more than one microphone (a headset's, an audio
-  interface's), a list under the tuner picks the one it listens to, and the page remembers it.
+  and tap a string to keep to it.
 
 ### Singing along
 
