@@ -167,3 +167,15 @@ def test_a_written_line_misheard_all_through_is_shown_when_the_words_heard_in_it
     # …but not a long line on a word or two heard
     wordy = LINES[:2] + [" ".join(["woah"] * 3 * len(heard["words"]))] + LINES[3:]
     assert [line["text"] for line in along.written(wordy, misheard)] == wordy[:2] + wordy[3:]
+
+
+def test_a_tabs_words_make_lines_lit_syllable_by_syllable():
+    sung = [["Eyes", 1.0, 1.5, []], ["bo-", 1.5, 2.0, [["bo", 1.5], ["ring", 1.8]]],
+            ["Now", 2.0, 2.5, []], ["there", 2.5, 3.0, []], ["is", 3.0, 3.2, []], ["a", 3.2, 3.4, []],
+            ["I'm", 3.6, 4.0, []], ["gonna", 4.0, 4.5, []], ["so", 6.5, 7.0, []], ["burn...how", 7.0, 7.5, []]]
+    sung[1][0] = "boring"
+    lines = along.from_tab(sung)
+    assert [line["text"] for line in lines] == ["Eyes boring", "Now there is a", "I'm gonna", "so burn...how"]
+    assert lines[0]["words"][1] == ["boring", 1.5, 2.0, [[2, 1.5], [6, 1.8]]]
+    assert (lines[0]["start"], lines[0]["end"]) == (1.0, 2.0)
+    assert [word[0] for word in lines[3]["words"]] == ["so", "burn", "how"]  # as many as the page counts

@@ -30,6 +30,7 @@ a fifth of a second behind you. You can play your instrument along. Nothing is r
   over it, 52% with the voice up to 10 dB under. So the microphone goes near your mouth.
 """
 
+import re
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -55,6 +56,9 @@ _APART = 1.0  # a line's words on a tab's notes this far (s) from where they wer
 _AROUND = 4.0  # …the same word being looked for this long before and after its note
 _SLOWEST = 1.5  # …and whole lines nobody heard are only kept where there's from _FASTEST to this long a word
 _FASTEST = 0.15
+_LINE_REST = 1.5  # a rest this long (s) between a tab's words ends a line (from_tab())
+_I_REST = 0.15  # …and one this long before an "I" does, a few words in
+_SPAN = r"[^\W_]+(?:['’][^\W_]+)*"  # a word, as the page counts them in a line (phone.html)
 
 
 def contour(track) -> list[float | None]:
@@ -125,6 +129,31 @@ def lines(melody) -> list[dict]:
         entry["end"] = max(entry["end"], end)
         entry["words"].append([word, start, end])
     return [found[line] for line in sorted(found)]
+
+
+def from_tab(sung: list[list]) -> list[dict]:
+    """The words a tab writes under its notes (tab.Placed.words), as lines() gives the heard ones, for a song with
+    no lyrics as written: each word on its note, syllable by syllable. The tab doesn't say where its lines end:
+    one starts at a capital (an "I" only after a rest, a few words into a line), or after a rest of _LINE_REST."""
+    found: list[dict] = []
+    end = None
+    for word, start, stop, parts in sung:
+        spans = re.findall(_SPAN, word)  # the words the page counts in it ("Burn...how" is two)
+        if not spans:
+            continue
+        rest = 0.0 if end is None else start - end
+        capital = spans[0][0].isupper() and (not re.fullmatch(r"I(['’].*)?", spans[0])  # "I" is in lines, but
+                                             or rest >= _I_REST and len(found[-1]["words"]) >= 4)  # starts some
+        if not found or capital or rest >= _LINE_REST:
+            found.append({"text": "", "start": start, "end": stop, "words": []})
+        line = found[-1]
+        line["text"] = f"{line['text']} {word}".strip()
+        line["end"], end = max(line["end"], stop), stop
+        letters = sum(len(s) - len(re.findall(r"['’]", s)) for s in spans)
+        lit = _lit(letters, [(len(re.findall(r"[^\W_]", part)), when) for part, when in parts]) if len(spans) == 1 \
+            else None
+        line["words"] += [[span, start, stop] + ([lit] if lit else []) for span in spans]
+    return found
 
 
 def written(text: list[str], melody, sung: list[list] | None = None,

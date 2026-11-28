@@ -875,7 +875,11 @@ function showTuning(voice) {
 function showSungLine(now) {
   const lines = singing.song.lines;
   let current = -1;
-  for (let i = 0; i < lines.length && lines[i].start <= now + 1; i++) current = i;
+  // A line comes up to a second early, but not before the one before it is sung to its end.
+  for (let i = 0; i < lines.length && now >= Math.min(lines[i].start, Math.max(lines[i].start - 1,
+                                                                             i ? lines[i - 1].end : -Infinity)); i++) {
+    current = i;
+  }
   if (current >= 0 && now > lines[current].end + 2 && current + 1 < lines.length) current += 0.5;  // between two lines
   const line = Number.isInteger(current) && current >= 0 ? lines[current] : null;
   const words = line ? line.words.filter((word) => word[1] <= now).length : 0;

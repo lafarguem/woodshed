@@ -466,8 +466,10 @@ def _to_sing_along(songs: Library, song: str) -> "along.Song":
 
     reference = songs.reference(song)
     sung = [t.melody for t in songs.takes_of(song, melody=True) if t.melody]
-    written = (reference.lyrics or {}).get("lines")
-    return along.Song(song, written or along.lines(reference.melody), reference.contour,
+    # The lyrics as written, timed; else the words the tab writes under its notes; else the words heard.
+    shown = ((reference.lyrics or {}).get("lines") or along.from_tab((reference.tab or {}).get("words") or [])
+             or along.lines(reference.melody))
+    return along.Song(song, shown, reference.contour,
                       along.octaves(reference.contour, along.register(sung[-RECENT_REGISTER:])),
                       reference.band, reference.voice, reference.tab["notes"] if reference.tab else None)
 
