@@ -482,3 +482,53 @@ def test_singing_along_shows_the_lyrics_genius_has_of_a_recognized_song(harbor, 
     assert harbor.library.reference("Harbor Lights").lyrics == {
         "from": "https://genius.com/winter-town-lyrics", "text": ["Down the winter town we go"] * 8, "lines": []}
     assert cli._to_sing_along(harbor.library, "Harbor Lights").lines == along.lines(misheard)
+
+
+def test_a_batch_asks_every_question_first_then_sets_each_reference_and_looks_for_its_tab(online, tone, monkeypatch):
+    from woodshed import songsterr
+
+    add_take(online.library, tone, "Night River", 3, 7, datetime(2026, 6, 3, 20, 0), LINES)
+    asked = []
+    monkeypatch.setattr(songsterr, "find", lambda title, artist=None: asked.append(title) or [])
+    monkeypatch.setattr(songsterr, "Waiting", None)  # the bookmark isn't waited for
+    online.melody = sing()
+
+    result = online("reference", "--batch", input="1\n\n")  # Harbor Lights: the official audio; Night River: none
+
+    assert result.exit_code == 0, result.output
+    out = text(result)
+    assert out.index("Night River” is passed over") < out.index("1/1 Harbor Lights")  # every question first
+    assert [url for url, _ in online.downloaded] == ["https://www.youtube.com/watch?v=a1"]
+    assert online.library.has_reference("Harbor Lights") and not online.library.has_reference("Night River")
+    assert asked == ["Harbor Lights"]
+    assert "1 of 2 songs now have a reference" in out
+    assert "Songsterr had no tab that fits for “Harbor Lights”" in out
+
+
+def test_a_batch_names_its_songs_and_wont_take_a_recording(online):
+    assert "No song called “night river”" in text(online("reference", "--batch", "harbor", "night river"))
+    result = online("reference", "--batch", "--songsterr", "harbor")
+    assert result.exit_code == 1 and "give it only song names" in text(result)
+
+
+def test_a_song_that_fails_in_a_batch_doesnt_stop_the_others(online, tone, monkeypatch):
+    from woodshed import songsterr
+
+    add_take(online.library, tone, "Night River", 3, 7, datetime(2026, 6, 3, 20, 0), LINES)
+    monkeypatch.setattr(songsterr, "find", lambda title, artist=None: [])
+    monkeypatch.setattr(songsterr, "Waiting", None)
+    real = youtube.download
+    calls = []
+
+    def download(url, folder):
+        calls.append(url)
+        if len(calls) == 1:
+            raise youtube.YouTubeError("Video unavailable")
+        return real(url, folder)
+
+    monkeypatch.setattr(youtube, "download", download)
+    result = online("reference", "--batch", input="1\n1\n")
+
+    assert result.exit_code == 0, result.output
+    assert len(calls) == 2 and "Couldn't get it from YouTube: Video unavailable" in text(result)
+    assert "1 of 2 songs now have a reference" in text(result) and "Not set:" in text(result)

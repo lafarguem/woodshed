@@ -674,11 +674,11 @@ def _show_lines(songs: Library, song: str, references: rating.References) -> Non
 
 @app.command()
 def reference(
-    targets: Annotated[list[str], typer.Argument(
+    targets: Annotated[list[str] | None, typer.Argument(
         metavar="[RECORDING] [SONG]", show_default=False,
         help="A recording of one of your songs (e.g. the original), or a link to one (YouTube…), and the song (part "
              "of its name is enough). Give only the recording and the song is recognized; only the song, and it says "
-             "what it's rated against (and offers to look for the original).")],
+             "what it's rated against (and offers to look for the original).")] = None,
     search: Annotated[bool, typer.Option("--search", help="Look for the original on YouTube, even if the song has a "
                                                           "reference already. Needs yt-dlp: brew install yt-dlp")] = False,
     remove: Annotated[bool, typer.Option("--remove", help="Rate the song against its scale again.")] = False,
@@ -695,6 +695,10 @@ def reference(
              "singer's), instead of the one found to follow the melody best.")] = None,
     no_tab: Annotated[bool, typer.Option("--no-tab", help="Sing along to the melody heard in the recording "
                                                           "again.")] = False,
+    batch: Annotated[bool, typer.Option(
+        "--batch", help="Several songs in one go, each named on its own (quoted), or else all those without a "
+                        "reference: you pick each one's original on YouTube first, then each is downloaded and "
+                        "followed, its lyrics got from Genius and its tab from Songsterr, without asking again.")] = False,
     library: LibraryOpt = None,
     language: LanguageOpt = None,
 ):
@@ -703,6 +707,12 @@ def reference(
     Your notes are then compared with the ones sung on the same words, in your
     instrument's key, and the lines furthest from the melody are pointed out.
     """
+    if batch:
+        if remove or tab or songsterr or no_tab or track or search:
+            console.print("--batch finds each song's original and Songsterr's tab of it: give it only song names.")
+            raise typer.Exit(1)
+        return _batch_references(targets or [], library, language)
+    targets = targets or []
     links = [t for t in targets if re.match(r"https?://", t)]
     files = [Path(t).expanduser() for t in targets if t not in links and Path(t).expanduser().is_file()]
     words = [t for t in targets if t not in links and not Path(t).expanduser().is_file()]
@@ -778,18 +788,90 @@ def reference(
     if song is None:
         console.print("Nothing was changed.")
         return
+    _keep_reference(songs, song, sung, contour, stems, link or _tilde(recording), title or recording.name, title,
+                    settings)
+    console.print(f"See how your takes compare: shed progress {escape(shlex.quote(song))}")
+    if tab or songsterr:
+        _set_tab(songs, song, "songsterr" if songsterr else tab.expanduser(), track)
+
+
+def _keep_reference(songs: Library, song: str, sung, contour, stems, source: str, shown: str, title: str | None,
+                    settings: config.Config) -> None:
+    """Keeps a recording followed (_follow_melody()) as the song's reference, and gets its lyrics from Genius."""
     with console.status("Keeping the recording to sing along to…"):
-        songs.set_reference(song, sung, link or _tilde(recording), title, contour, stems)
+        songs.set_reference(song, sung, source, title, contour, stems)
     console.print(f"[green]✓[/green] “{escape(song)}” is now rated against the melody of "
-                  f"{escape(title or recording.name)} ({len(sung.lines)} lines heard).")
+                  f"{escape(shown)} ({len(sung.lines)} lines heard).")
     older = sum(t.melody is None for t in songs.takes_of(song, melody=True))
     if older:
         console.print(f"{older} of its takes {'was' if older == 1 else 'were'} filed before Woodshed kept their "
                       "melody: `shed progress` analyzes them the first time (it takes a while).")
     _write_lyrics(songs, song, settings.genius_token)
-    console.print(f"See how your takes compare: shed progress {escape(shlex.quote(song))}")
-    if tab or songsterr:
-        _set_tab(songs, song, "songsterr" if songsterr else tab.expanduser(), track)
+
+
+def _batch_references(names: list[str], library: Path | None, language: str | None) -> None:
+    """`shed reference --batch`: the songs named (each one argument), or all without a reference. Every question is
+    asked first (which video is each one's original), then each is downloaded, followed and kept, with its lyrics
+    from Genius and its tab from Songsterr, unattended. A song that fails is said so, and the others go on."""
+    settings = _settings()
+    songs = _existing_library(library, settings)
+    if not youtube.available():
+        console.print("Getting the originals from YouTube needs yt-dlp: brew install yt-dlp")
+        raise typer.Exit(1)
+    wanted = list(dict.fromkeys(_find_song(songs, name) for name in names)) if names \
+        else [song for song in songs.songs() if not songs.has_reference(song)]
+    if not wanted:
+        console.print("All your songs have a reference. Name the ones to set again: "
+                      "shed reference --batch 'Song one' 'Song two'")
+        return
+    console.print(f"Pick the original of each of {len(wanted)} song{'s' if len(wanted) > 1 else ''}; then they're "
+                  "got and followed one after another, without asking again.")
+    picked: list[tuple[str, str]] = []
+    for n, song in enumerate(wanted, 1):
+        console.rule(f"{n}/{len(wanted)}  {escape(song)}", align="left")
+        try:
+            link = _pick_original(song, songs)
+        except youtube.YouTubeError as e:
+            console.print(f"[red]Couldn't search YouTube: {escape(str(e))}[/red]")
+            link = None
+        if link:
+            picked.append((song, link))
+        else:
+            console.print(f"“{escape(song)}” is passed over.")
+    done, failed, untabbed = [], [], []
+    for n, (song, link) in enumerate(picked, 1):
+        console.rule(f"{n}/{len(picked)}  {escape(song)}", align="left")
+        with tempfile.TemporaryDirectory(prefix="woodshed-") as scratch:
+            try:
+                with console.status("Downloading the recording…"):
+                    recording, title = youtube.download(link, Path(scratch))
+                sung, contour, stems = _follow_melody(recording, title or recording.name, language)
+            except youtube.YouTubeError as e:
+                console.print(f"[red]Couldn't get it from YouTube: {escape(str(e))}[/red]")
+                failed.append(song)
+                continue
+            except typer.Exit:  # said why
+                failed.append(song)
+                continue
+        ranked = dict(songs.match(sung.lines))
+        if ranked.get(song, 0.0) < lib.MATCH_SCORE and any(t.transcript for t in songs.takes_of(song)):
+            console.print(f"[yellow]Its lyrics hardly match your takes of “{escape(song)}”: it isn't kept.[/yellow] "
+                          f"To keep it anyway: shed reference {escape(shlex.quote(song))} {escape(link)}")
+            failed.append(song)
+            continue
+        _keep_reference(songs, song, sung, contour, stems, link, title or link, title, settings)
+        done.append(song)
+        if not _tab_from_songsterr(songs, song, songs.reference(song).contour, wait=False):
+            untabbed.append(song)
+    console.rule()
+    console.print(f"[green]✓[/green] {len(done)} of {len(wanted)} songs now have a reference."
+                  if done else "No reference was set.")
+    if failed:
+        console.print(f"[red]Not set:[/red] {escape(', '.join(failed))}")
+    if untabbed:
+        console.print("Songsterr had no tab that fits for "
+                      + ", ".join(f"“{escape(song)}”" for song in untabbed)
+                      + ": pick one yourself with shed reference <song> --songsterr")
 
 
 def _set_tab(songs: Library, song: str, file: Path | Literal["songsterr"] | None, track: str | None = None) -> None:
@@ -813,7 +895,8 @@ def _set_tab(songs: Library, song: str, file: Path | Literal["songsterr"] | None
                       f"first, with shed reference {escape(shlex.quote(song))} --search, or with the recording.")
         raise typer.Exit(1)
     if file == "songsterr":
-        return _tab_from_songsterr(songs, song, current.contour, track)
+        _tab_from_songsterr(songs, song, current.contour, track)
+        return
     try:
         with console.status("Finding the melody in the tab…"):
             placed = tabs.place(tabs.tracks(file), current.contour, along.CONTOUR_HOP, track)
@@ -848,9 +931,10 @@ def _keep_tab(songs: Library, song: str, placed, source: str, shown: str) -> str
             f"{shown}{key}.{close}")
 
 
-def _tab_from_songsterr(songs: Library, song: str, contour: list, track: str | None = None) -> None:
-    """Waits for the To Woodshed bookmark to send a tab from songsterr.com, and lays it over the song's recording;
-    a tab that doesn't fit is said so, and it waits for another."""
+def _tab_from_songsterr(songs: Library, song: str, contour: list, track: str | None = None, wait: bool = True) -> bool:
+    """Lays Songsterr's tab of the song over its recording, as found by its API, or else waits for the To Woodshed
+    bookmark to send one from songsterr.com (`wait`); a tab that doesn't fit is said so, and it waits for another.
+    Whether one was kept."""
     import webbrowser
 
     from woodshed import along, songsterr
@@ -891,9 +975,12 @@ def _tab_from_songsterr(songs: Library, song: str, contour: list, track: str | N
             said, why = lay(songsterr.fetch(song_id))
             if said:
                 console.print(f"[green]✓[/green] {escape(said)}")
-                return
+                return True
     except tabs.TabError as e:
         why = str(e)[:1].upper() + str(e)[1:]
+    if not wait:
+        console.print(f"[yellow]{escape(why.rstrip('.'))}.[/yellow]")
+        return False
     console.print(f"[yellow]{escape(why.rstrip('.'))}.[/yellow] Pick the tab yourself:")
     try:
         server = songsterr.Waiting(songsterr.PORT, songsterr.page(song, query), received)
@@ -913,6 +1000,7 @@ def _tab_from_songsterr(songs: Library, song: str, contour: list, track: str | N
         server.server_close()
     if not server.done:
         console.print("Nothing was changed.")
+    return bool(server.done)
 
 
 def _pick_original(song: str, songs: Library) -> str | None:

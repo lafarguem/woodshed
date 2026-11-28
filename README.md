@@ -92,6 +92,8 @@ shed reference ~/Music/harbor-lights.mp3  # rate a song's pitch against the orig
 shed reference harbor       # …or find the original on YouTube (needs yt-dlp, see below)
 shed reference harbor --songsterr  # sing along to the notes of Songsterr's tab of it (see Singing along)
 shed reference harbor --tab ~/Downloads/harbor.gp  # …or of a Guitar Pro file
+shed reference --batch       # every song with no reference: its original from YouTube, its tab from Songsterr
+shed reference --batch harbor 'night river'  # …or the songs named, one argument each
 shed serve                  # …and sing along to the original on the page's Sing tab, your pitch drawn over its melody
 shed tune                   # tune your guitar: pluck a string, see which way to turn it
 shed tune drop d            # …in another tuning (see Tuning your guitar)
@@ -292,6 +294,13 @@ has another melody. If the original isn't there, because the song has no artist 
 one of the videos found. You can also give it a link (`shed reference harbor
 https://www.youtube.com/watch?v=…`). The download is deleted as soon as its melody has been followed. What's kept is the melody, and the
 recording as two mp3s in the song's folder, to sing along to (see Singing along).
+
+**Several songs at once.** `shed reference --batch` does this for every song that has no reference yet, or
+for the songs you name (`shed reference --batch harbor 'night river'`, one argument each). You pick each
+song's original first, so the questions all come at the start. Then each one is downloaded and followed
+in turn, gets its lyrics from Genius and its tab from Songsterr, and nothing more is asked: you can leave it
+running. A recording whose lyrics don't match your takes of its song isn't kept. Any song Songsterr has no
+tab for is listed at the end, so you can pick one with the bookmark (`shed reference harbor --songsterr`).
 yt-dlp isn't bundled with Woodshed because YouTube keeps changing, so it needs updating every few weeks
 (`brew upgrade yt-dlp`). Note that YouTube's terms don't allow downloading outside its own apps: whether to
 use this is up to you.
