@@ -433,7 +433,39 @@ def test_a_connection_is_kept_for_the_next_request(singing):
     assert connection.getresponse().will_close  # refused: it starts afresh
 
 
+def test_the_page_replays_a_take(tmp_path):
+    from woodshed import replay
+
+    shown = replay.Replay("Harbor Lights", "take 1 of 1", [None, -3.0], [None, -3.5], None, [], 0, 0, 0.0, b"the take")
+
+    def prepare(title, number):
+        if (title, number) != ("Harbor Lights", 1):
+            raise ValueError(title)
+        return shown
+
+    session = replay.Session(lambda: [{"title": "Harbor Lights", "takes": ["2026-06-01 20:00"]}], prepare)
+    cert, key, secret = phone.credentials(tmp_path / "phone")
+    running = phone.Server(Library(tmp_path / "lib"), secret, cert, key, 0, lambda *take: None, replay=session)
+    threading.Thread(target=running.serve_forever, daemon=True).start()
+    served = SimpleNamespace(port=running.server_address[1], secret=secret)
+    try:
+        assert sing_request(served, "/replay") == (200, {"available": True, "songs": session.songs()})
+        assert sing_request(served, "/replay", key="guess")[0] == 403
+        status, take = sing_request(served, "/replay/take?title=Harbor%20Lights&take=1")
+        assert status == 200 and take == shown.shown()
+        assert sing_request(served, "/replay/audio?title=Harbor%20Lights&take=1", raw=True) == (200, b"the take")
+        for asked in ("title=Harbor%20Lights&take=2", "title=Winter%20Town&take=1", "title=Harbor%20Lights&take=one",
+                      "title=Harbor%20Lights"):
+            assert sing_request(served, f"/replay/take?{asked}")[0] == 404
+        assert sing_request(served, "/replay/video?title=Harbor%20Lights&take=1")[0] == 404
+    finally:
+        running.shutdown()
+        running.server_close()
+
+
 def test_a_server_with_nothing_to_sing_along_to_says_so(server):
+    assert sing_request(server, "/replay") == (200, {"available": False, "songs": []})
+    assert sing_request(server, "/replay/take?title=Harbor%20Lights&take=1")[0] == 404
     assert sing_request(server, "/sing") == (200, {"available": False, "songs": []})
     assert sing_request(server, "/sing/song?title=Harbor%20Lights")[0] == 404
     assert sing_request(server, "/sing/start", {"song": "Harbor Lights", "rate": 48_000})[0] == 404

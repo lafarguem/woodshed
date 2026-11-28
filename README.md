@@ -88,6 +88,8 @@ shed progress harbor -t 3   # take 3 in detail: its rating, and its best and wor
 shed progress harbor --lines  # each line of the song across your latest takes, against its melody
 shed play harbor --rating   # your worst take, then your best (or --pitch, --timing: on that alone)
 shed play harbor -t 3       # take 3 (--take 3)
+shed replay harbor          # your latest take over its song's melody, on a page: what you sang, as when singing along
+shed replay harbor -t 3     # …or take 3 (see Replaying a take)
 shed reference ~/Music/harbor-lights.mp3  # rate a song's pitch against the original's melody
 shed reference harbor       # …or find the original on YouTube (needs yt-dlp, see below)
 shed reference harbor --songsterr  # sing along to the notes of Songsterr's tab of it (see Singing along)
@@ -95,6 +97,7 @@ shed reference harbor --tab ~/Downloads/harbor.gp  # …or of a Guitar Pro file
 shed reference --batch       # every song with no reference: its original from YouTube, its tab from Songsterr
 shed reference --batch harbor 'night river'  # …or the songs named, one argument each
 shed serve                  # …and sing along to the original on the page's Sing tab, your pitch drawn over its melody
+                            # …or replay any take on its Replay tab, as `shed replay` does
 shed tune                   # tune your guitar: pluck a string, see which way to turn it
 shed tune drop d            # …in another tuning (see Tuning your guitar)
 shed devices                # microphones you can record from, and how they're connected
@@ -131,6 +134,8 @@ order they arrive, so naming the first take of a new song lets the next ones be 
   takes do.
 - The page's Sing tab plays a song's reference recording in your headphones, and draws your pitch over its
   melody as you sing along (see Singing along).
+- The page's Replay tab plays one of your takes with what you sang drawn over its song's melody, as `shed replay`
+  does (see Replaying a take).
 - The page's Tune tab tunes your guitar, as `shed tune` does (see Tuning your guitar), from the phone's microphone.
 - When the phone has more than one microphone (a headset's, an audio interface's), a list under the tabs picks
   the one Record, Sing and Tune listen to, and the page remembers it. Picked while singing or tuning, it's listened
@@ -462,6 +467,69 @@ not the recording. Nothing is recorded.
 - It needs the recording, which `shed reference` keeps since v0.9, as two mp3s in the song's folder (its singer,
   and the rest: about 5 MB a song). Set the reference again for a song whose reference is older.
 - The page works on the Mac too: open its link in a browser there.
+
+### Replaying a take
+
+`shed replay harbor` opens a page on your Mac that plays your latest take of a song (`-t 3`: take 3), with the
+picture you sing along to: the melody of the song's reference scrolls by with its words, and what you sang is drawn
+over it, green on the melody's note, yellow a semitone off, red further. It needs a reference set since v0.9.
+
+From your phone, the Replay tab of `shed serve`'s page does the same: pick a song, then one of its takes. It's the
+same page, with the same picture as the Sing tab. There, the melody is laid along the take when you pick it, which
+takes longer than `shed replay` does (about 3 s for each minute of take, against 1): the pitch is read without the
+graphics chip, which is kept for filing the takes you record meanwhile. The latest three takes picked are kept
+ready. A take filed without its words (`--no-isolate`) is laid by its melody alone there; `shed replay` hears its
+words first.
+
+A take has its own time: another tempo, an intro of its own, a solo left out, a chorus sung once more. So the melody
+is first laid along the take, each moment of the take given the moment of the reference it sings. As nothing is
+live, the whole take is there to go by:
+
+1. Its pitch is read with the whole take around each moment (about a second per minute of take), as when it's
+   rated, not half a second at a time.
+2. The two melodies are laid along each other, 25 moments a second: the take may go up to twice as fast as the
+   reference, or half as fast.
+3. A melody alone doesn't tell the first verse from the second. The words do: where three words in a row were heard
+   in your take and are in the song's lines, the take is drawn there. A chorus goes to whichever of its times keeps
+   the take going forward.
+4. The take may leave the reference and pick it up elsewhere (a solo left out, a verse sung again), and the reference
+   may wait while the take goes on (a longer intro, a break): nothing of the melody is drawn meanwhile.
+5. Which of the 12 keys you sing the melody in is found first, by laying the take in each, more coarsely:
+   a melody sung far from where it's looked for would be laid anywhere.
+
+- The melody is drawn in your instrument's key (a capo moved, the song transposed), at its tuning, in the octave
+  nearest your voice. When your voice is nowhere near it there (a semitone and a half or more away, all through:
+  a melody taken a fourth lower than the guitar plays it, say), it's drawn where you sing it, and `shed replay`
+  says how far that is.
+- When your voice sits a little under or over the melody all through (15¢ or more), `shed replay` says by how much,
+  and a box on the page moves the melody there: each line is then seen against the rest of the take.
+- Under the picture, a strip shows the whole take, each moment in the colour it's drawn in: click it, or drag along
+  it, to go there. Space plays and pauses; ← and → go 5 s back and on. What you're about to sing is drawn too,
+  faintly.
+- Under the strip: the note you were on and how far from it, the line being sung, and how much of what you sang
+  was on the melody's note, over the whole take.
+- With a tab, you're set against the notes it writes, as when singing along: where the tab writes another voice
+  than the one heard (the upper of Space Song's chorus), you're drawn off it though you sing what its singer does.
+  The thin line over the tab's notes is what the singer sings.
+
+**How accurate it is:** so far, it's been tried on 25 takes of 9 songs by one amateur, and looked at on three.
+- On a take of Space Song (four choruses sung where the reference sings two, then six for eight), each of the 20
+  lines came up within a second of where the take's own words were heard.
+- 12 of the 25 takes were sung a semitone and a half or more from the melody as their instrument played it, all
+  through, 8 of them a fourth or a fifth away. Laid where the voice sings, 38 to 64% of the moments sung in both
+  were within half a semitone of the reference singer's melody on 10 of them; laid in the instrument's key, 13 to
+  41%, with the words a second or two from their notes. So which of the 12 keys you sing in is found before
+  anything else.
+- Over the 25, 54% of the moments sung in both the take and the reference were within half a semitone (19 to 79%).
+- A take was followed in 1 to 7 stretches (2.7 on average): each time it leaves the reference, or the reference
+  waits, a new one starts.
+
+**Limits:**
+- One key for the whole take: a chorus taken a fourth lower than the verses is drawn off the melody.
+- Where the take's guitar plays alone, the odd note of it may be read as your voice, and a melody drawn there.
+- An Apple Lossless take is turned into an mp3 for the page (a few seconds), as only Safari plays those.
+- `shed replay`'s page is only on your Mac (127.0.0.1), for as long as it runs; from another device, use the
+  Replay tab of `shed serve`'s.
 
 ## The library is just folders
 

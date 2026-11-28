@@ -353,6 +353,120 @@ def play(
             break
 
 
+@app.command(name="replay")
+def replay_take(
+    name: Annotated[list[str], typer.Argument(help="The song; part of its name is enough.", show_default=False)],
+    take: Annotated[int | None, typer.Option("--take", "-t", min=1, show_default=False,
+                                             help="This take, numbered as `shed progress` numbers them. "
+                                                  "[default: your latest]")] = None,
+    port: Annotated[int, typer.Option(help="The port the page is on. [default: any that's free]",
+                                      show_default=False)] = 0,
+    library: LibraryOpt = None,
+):
+    """Replay a take over its song's melody: a page on this Mac plays the take, the melody of the song's reference
+    scrolls by as you sang it, with its words, and what you sang is drawn over it, as when singing along."""
+    import webbrowser
+
+    from woodshed import replay
+
+    songs = _existing_library(library, config.load())
+    song = _find_song(songs, " ".join(name))  # quoted or not
+    again = f"shed reference {shlex.quote(song)}"
+    reference = _reference(songs, song)
+    if reference is None:
+        if not songs.has_reference(song):
+            console.print(f"“{escape(song)}” has no reference melody to replay a take over. Set one: {escape(again)}")
+        raise typer.Exit(1)
+    if not reference.contour:
+        console.print(f"The reference of “{escape(song)}” was set before Woodshed kept its melody all through "
+                      f"(v0.9). Set it again: {escape(again)} --search, or with the recording.")
+        raise typer.Exit(1)
+    takes = songs.takes_of(song, melody=True)
+    if not takes:
+        console.print(f"“{escape(song)}” has no takes yet.")
+        raise typer.Exit(1)
+    number = take or len(takes)
+    _check_take(song, number, len(takes))
+    if missing := models.missing():
+        console.print(f"[yellow]{_not_downloaded(missing)} Run `shed init` to download.[/yellow]")
+        raise typer.Exit(1)
+    [chosen] = _rate(songs, [takes[number - 1]], with_melody=True)  # its words, if it was filed without them
+    try:
+        with console.status(f"Laying the melody along take {number}…"):
+            shown = _replay_of(song, number, len(takes), chosen, reference)
+    except audio.AudioError as e:
+        console.print(f"[red]Can't read {escape(chosen.path.name)}: {escape(str(e))}[/red]")
+        raise typer.Exit(1)
+    try:
+        server = replay.Server(shown, port)
+    except OSError as e:
+        console.print(f"[red]Can't use port {port}: {escape(e.strerror or str(e))}.[/red] Leave --port out, and "
+                      "any free one is used.")
+        raise typer.Exit(1)
+    link = f"http://127.0.0.1:{server.server_port}/"
+    console.print(f"[green]▶[/green] [bold]{escape(song)}[/bold], {shown.take}, over its melody: {link}")
+    for note in _replay_notes(shown):
+        console.print(note)
+    console.print("[dim]The page plays the take, on this Mac. Ctrl+C stops.[/dim]")
+    webbrowser.open(link)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+
+
+def _replay_of(song: str, number: int, count: int, take: Take, reference: lib.Reference,
+               device: str | None = None) -> "replay.Replay":
+    """A take (the song's `number`th of `count`) over the song's reference, which keeps its melody all through."""
+    from woodshed import replay
+
+    return replay.of(song, f"take {number} of {count}, recorded {_when(take.path)}", take.path, take.melody,
+                     reference.melody, reference.contour, reference.tab["notes"] if reference.tab else None,
+                     _lines_shown(reference), device)
+
+
+def _replayed(songs: Library) -> "replay.Session":
+    """Replaying takes from `shed serve`'s page: any take of a song whose reference keeps its melody all through.
+    The pitch tracker runs on the CPU here, as filing a take uses the GPU (rmvpe.pitch()): about 3 s a minute of
+    take. A take filed without its words is laid by its melody alone: hearing them would take the GPU too."""
+    from woodshed import replay
+
+    def listed() -> list[dict]:
+        return [{"title": song, "takes": [_when(path) for path in paths]} for song, paths in songs.songs().items()
+                if paths and songs.has_reference(song) and (r := songs.reference(song)) and r.melody and r.contour]
+
+    def prepare(title: str, number: int) -> "replay.Replay":
+        reference = songs.reference(title) if title in songs.songs() and songs.has_reference(title) else None
+        takes = songs.takes_of(title, melody=True) if reference and reference.melody and reference.contour else []
+        if not 1 <= number <= len(takes):
+            raise ValueError(title)
+        console.print(f"[green]▶[/green] {datetime.now():%H:%M} Replaying take {number} of {escape(title)} on your "
+                      "phone")
+        return _replay_of(title, number, len(takes), takes[number - 1], reference, device="cpu")
+
+    return replay.Session(listed, prepare)
+
+
+def _replay_notes(shown: "replay.Replay") -> list[str]:
+    """What to know of how the melody is drawn over a take: in which key, and where the voice sits against it."""
+    from woodshed import replay
+
+    notes = []
+    away = lambda semitones: f"{melody._semitones(abs(semitones))} {'under' if semitones < 0 else 'over'}"  # noqa: E731
+    if shown.key:
+        notes.append(f"Your instrument plays {away(shown.key)} the reference, so the melody was moved to match.")
+    if shown.apart:
+        notes.append(f"All through, you sing the melody about {away(shown.apart)} where your instrument plays it: "
+                     "it's drawn where you sing it.")
+    if abs(shown.lean) >= replay.SITS:
+        notes.append(f"Your voice sits about {abs(shown.lean) * 100:.0f}¢ {'under' if shown.lean < 0 else 'over'} "
+                     "the melody all through: the page can move the melody there, to see each line against the "
+                     "rest.")
+    return notes
+
+
 @app.command()
 def tune(
     name: Annotated[list[str] | None, typer.Argument(help="The tuning; part of its name is enough: "
@@ -466,12 +580,18 @@ def _to_sing_along(songs: Library, song: str) -> "along.Song":
 
     reference = songs.reference(song)
     sung = [t.melody for t in songs.takes_of(song, melody=True) if t.melody]
-    # The lyrics as written, timed; else the words the tab writes under its notes; else the words heard.
-    shown = ((reference.lyrics or {}).get("lines") or along.from_tab((reference.tab or {}).get("words") or [])
-             or along.lines(reference.melody))
-    return along.Song(song, shown, reference.contour,
+    return along.Song(song, _lines_shown(reference), reference.contour,
                       along.octaves(reference.contour, along.register(sung[-RECENT_REGISTER:])),
                       reference.band, reference.voice, reference.tab["notes"] if reference.tab else None)
+
+
+def _lines_shown(reference: lib.Reference) -> list[dict]:
+    """A reference's lines, timed in its recording, as shown when singing along: its lyrics as written; else the
+    words its tab writes under its notes; else the words heard."""
+    from woodshed import along
+
+    return ((reference.lyrics or {}).get("lines") or along.from_tab((reference.tab or {}).get("words") or [])
+            or along.lines(reference.melody))
 
 
 @app.command()
@@ -1125,8 +1245,8 @@ def serve(
 ):
     """Record from your phone: open the page this puts up on your Wi-Fi. Each take you record there is sent here and
     filed, and the page shows how it rated (and asks which song it is, when that isn't clear). It can also play a
-    song's reference recording to sing along to, your pitch drawn over its melody, and tune your guitar, as
-    `shed tune` does."""
+    song's reference recording to sing along to, your pitch drawn over its melody, replay a take over that melody
+    as `shed replay` does, and tune your guitar, as `shed tune` does."""
     settings = _settings()
     songs = Library(library or Path(settings.library), settings.take_format)
     for stuck in songs.incoming.glob("*.wav.filing"):  # a `shed serve` stopped while filing it: waiting again
@@ -1154,7 +1274,8 @@ def serve(
                           f"{waiting} waiting to be filed")
 
     try:
-        server = phone.Server(songs, secret, cert, key, port, received, session, filing=filer is not None, sing=sing)
+        server = phone.Server(songs, secret, cert, key, port, received, session, filing=filer is not None, sing=sing,
+                              replay=_replayed(songs))
     except OSError as e:
         console.print(f"[red]Can't use port {port}: {escape(e.strerror or str(e))}.[/red] "
                       f"Try another: shed serve --port {port + 1}")
@@ -1180,6 +1301,8 @@ def serve(
     if sing.titles:
         console.print("[dim]Sing, on the page, plays a song's reference recording in your headphones, and draws your "
                       "pitch over its melody as you sing along.[/dim]")
+        console.print("[dim]Replay, on the page, plays one of your takes of those songs, with what you sang drawn "
+                      "over the melody.[/dim]")
     elif any(songs.has_reference(s) for s in songs.songs()):
         console.print("[dim]To sing along to a song on the page, set its reference again (shed reference <song> "
                       "--search, or with the recording): references set before v0.9 kept the melody's notes, not "

@@ -10,6 +10,9 @@ The page can also play a song's reference recording to sing along to (along.Sess
 melody, sends what its microphone hears as fast as answers come back (some 15 times a second), and draws the
 pitches read. Connections are kept open between requests, or each would start with a new handshake.
 
+It can replay a take over its song's melody too (replay.Session): it gets the songs and their takes, then what to
+draw of the one picked, and the take itself.
+
 And it can tune a guitar, as `shed tune` does (tuner.py): it gets the tunings, and sends the latest 0.4 s its
 microphone heard, over and over, each answered with the string it's taken for and how far from it. Nothing is kept
 here between two of them: the page can come and go.
@@ -41,6 +44,7 @@ from woodshed.library import Library
 
 if TYPE_CHECKING:
     from woodshed.along import Session as Singing
+    from woodshed.replay import Session as Replaying
 
 PORT = 8765
 MAX_UPLOAD_BYTES = 1 << 30  # about 9 hours, at the bitrate the page records at
@@ -168,13 +172,14 @@ def credentials(folder: Path) -> tuple[Path, Path, str]:
 
 class Server(ThreadingHTTPServer):
     """The page, and the takes it sends: `received(raw, seconds, waiting)` is told of each one kept. With `sing`,
-    the page can sing along to a song too."""
+    the page can sing along to a song too; with `replay`, replay a take over its song's melody."""
 
     daemon_threads = True
 
     def __init__(self, songs: Library, secret: str, cert: Path, key: Path, port: int,
                  received: Callable[[Path, float, int], None], session: Session | None = None, filing: bool = False,
-                 max_bytes: int = MAX_UPLOAD_BYTES, sing: "Singing | None" = None):
+                 max_bytes: int = MAX_UPLOAD_BYTES, sing: "Singing | None" = None,
+                 replay: "Replaying | None" = None):
         super().__init__(("0.0.0.0", port), _Handler)
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.load_cert_chain(cert, key)
@@ -183,7 +188,7 @@ class Server(ThreadingHTTPServer):
         self.socket = context.wrap_socket(self.socket, server_side=True, do_handshake_on_connect=False)
         self.songs, self.secret, self.received, self.max_bytes = songs, secret, received, max_bytes
         self.session, self.filing = session or Session(), filing  # filing: they're filed here as they come
-        self.sing = sing
+        self.sing, self.replay = sing, replay
         self._naming = threading.Lock()
         self.open_seconds = 25.0  # how long a page's question whether this still runs is left unanswered (/open)
         self._closing, self._asking, self._count = threading.Event(), 0, threading.Lock()
@@ -297,6 +302,10 @@ class _Handler(BaseHTTPRequestHandler):
             if not self._allowed(self.headers.get(_KEY_HEADER)):
                 return self._json(403, error="this isn't the link `shed serve` shows")
             return self._sing_get(url.path, parse_qs(url.query))
+        if url.path.startswith("/replay"):
+            if not self._allowed(self.headers.get(_KEY_HEADER)):
+                return self._json(403, error="this isn't the link `shed serve` shows")
+            return self._replay(url.path, parse_qs(url.query))
         if url.path == "/open":
             if not self._allowed(self.headers.get(_KEY_HEADER)):
                 return self._json(403, error="this isn't the link `shed serve` shows")
@@ -375,6 +384,27 @@ class _Handler(BaseHTTPRequestHandler):
             return self._reply(200, "audio/mpeg", sing.audio(title, asked.get("part", [""])[0]))
         except (ValueError, OSError):
             return self._json(404, error="that song has no recording to sing along to")
+
+    def _replay(self, path: str, asked: dict) -> None:
+        """Replaying a take from the phone: the songs and takes it can pick (/replay), what its page draws of the
+        take numbered `take` (from 1, the oldest) of the song `title` (/replay/take), and that take, as an mp3
+        (/replay/audio)."""
+        replay = self.server.replay
+        if path == "/replay":
+            return self._json(200, available=replay is not None, songs=replay.songs() if replay else [])
+        number = asked.get("take", [""])[0]
+        if replay is None or path not in ("/replay/take", "/replay/audio") or not (
+                number.isascii() and number.isdigit() and len(number) < 7):
+            return self._json(404, error="not found")
+        try:
+            take = replay.take(asked.get("title", [""])[0], int(number))
+        except ValueError:
+            return self._json(404, error="that take isn't there to replay")
+        except (audio.AudioError, OSError) as e:
+            return self._json(500, error=f"the take couldn't be read ({e})")
+        if path == "/replay/take":
+            return self._json(200, **take.shown())
+        self._reply(200, "audio/mpeg", take.audio)
 
     def _sing(self, path: str) -> None:
         """Your pitch as you sing along: /sing/start says how fast the microphone samples and for which song,

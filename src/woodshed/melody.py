@@ -163,15 +163,9 @@ def compare(take: Melody, reference: Melody) -> Comparison | None:
     def offsets(shift: int) -> np.ndarray:
         return 100 * ((pitch - (target + shift) + 6) % 12 - 6)  # cents, octaves ignored
 
-    by_instrument = take.chords is not None and reference.chords is not None
-    if by_instrument:
-        mine = np.array([take.chords[k] for k, _ in pairs])
-        theirs = np.array([reference.chords[l] for _, l in pairs])
-        closeness = np.array([np.sum(mine * np.roll(theirs, t, axis=1)) for t in range(12)]) / len(pairs)
-        shift = int(np.argmax(closeness))
-        if shift in (5, 7) and closeness[shift] - closeness[0] < FIFTH_MARGIN:
-            shift = 0
-    else:  # no chords to go by: the key the voice fits best
+    shift = key(take, reference, pairs)
+    by_instrument = shift is not None
+    if shift is None:  # no chords to go by: the key the voice fits best
         shift = int(np.argmax([np.mean(np.abs(offsets(t)) < 50) for t in range(12)]))
     off = offsets(shift)
     first_word = {}
@@ -189,6 +183,20 @@ def compare(take: Melody, reference: Melody) -> Comparison | None:
             passages.append(Sung(r, take.words[my_word[here].min()][1], take.words[my_word[here].max()][2],
                                  float(np.median(off[here]))))
     return Comparison(shift, by_instrument, lines, passages)
+
+
+def key(take: Melody, reference: Melody, pairs: list[tuple[int, int]]) -> int | None:
+    """How many semitones above the reference's the take's instrument plays (0-11), read from the chords under
+    the words heard as the same (align()); None with no chords to go by (a cappella), or no such words."""
+    if take.chords is None or reference.chords is None or not pairs:
+        return None
+    mine = np.array([take.chords[k] for k, _ in pairs])
+    theirs = np.array([reference.chords[l] for _, l in pairs])
+    closeness = np.array([np.sum(mine * np.roll(theirs, t, axis=1)) for t in range(12)]) / len(pairs)
+    shift = int(np.argmax(closeness))
+    if shift in (5, 7) and closeness[shift] - closeness[0] < FIFTH_MARGIN:
+        shift = 0
+    return shift
 
 
 def _compared(take: Melody, reference: Melody, pairs: list[tuple[int, int]]) -> tuple[np.ndarray, ...] | None:
