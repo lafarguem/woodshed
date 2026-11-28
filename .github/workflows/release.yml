@@ -23,7 +23,7 @@ jobs:
         run: brew install ffmpeg uv python@3.14
 
       - name: Keep the pitch model from one run to the next
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           # The whole cache: a model's own folder only links to its files, kept in a store all models share.
           path: ~/.cache/huggingface/hub
